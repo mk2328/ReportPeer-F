@@ -489,13 +489,20 @@ class DocumentBuilder:
         left_margin = float(
             self.config.get("layout", {}).get("margins_inches", {}).get("left", 1.5)
         )
+        right_margin = float(
+            self.config.get("layout", {}).get("margins_inches", {}).get("right", 1.0)
+        )
+        page_width = 8.5 if str(self.config.get("layout", {}).get("page_size", "Letter")).lower() == "letter" else 8.27
         logo_left = float(approval_cfg.get("logo_left_inches", 0.84))
         table_indent = logo_left - left_margin
+        # Logo sits in the left margin; text cell must reach the right margin so the
+        # department Small Caps line stays on one line (~5.58" in the official sample).
+        text_col = max(5.58, page_width - right_margin - logo_left - logo_w)
 
         header = self.doc.add_table(rows=1, cols=2)
         self._set_table_borders_none(header)
-        # Sample department line spans ~5.58"; keep one line with logo + text.
-        self._set_table_column_widths(header, [0.88, 5.12])
+        self._set_table_cell_margins(header, inches=0.0)
+        self._set_table_column_widths(header, [logo_w, text_col])
         self._set_table_left_indent(header, table_indent)
         self._set_table_alignment(header, "left")
 
@@ -544,6 +551,8 @@ class DocumentBuilder:
         pt = self.doc.add_paragraph()
         pt.paragraph_format.space_after = Pt(18)
         pt.paragraph_format.line_spacing = 1.0
+        pt.paragraph_format.left_indent = Inches(0)
+        pt.paragraph_format.first_line_indent = Inches(0)
         self._set_paragraph_tab_stops(pt, [1.44])
         pt_run = pt.add_run(f"Project Title:\t{project_title}")
         self._apply_run_style(pt_run, size=12, bold=False)
@@ -551,6 +560,8 @@ class DocumentBuilder:
         by_para = self.doc.add_paragraph()
         by_para.paragraph_format.space_before = Pt(6)
         by_para.paragraph_format.space_after = Pt(6)
+        by_para.paragraph_format.left_indent = Inches(0)
+        by_para.paragraph_format.first_line_indent = Inches(0)
         by_run = by_para.add_run("By")
         self._apply_run_style(by_run, size=12, bold=False)
 
@@ -902,6 +913,23 @@ class DocumentBuilder:
             jc = OxmlElement("w:jc")
             tbl_pr.append(jc)
         jc.set(qn("w:val"), "center" if alignment == "center" else "left")
+
+    def _set_table_cell_margins(self, table, inches=0.0):
+        tbl = table._tbl
+        tbl_pr = tbl.tblPr if tbl.tblPr is not None else OxmlElement("w:tblPr")
+        if tbl.tblPr is None:
+            tbl.insert(0, tbl_pr)
+        existing = tbl_pr.find(qn("w:tblCellMar"))
+        if existing is not None:
+            tbl_pr.remove(existing)
+        margins = OxmlElement("w:tblCellMar")
+        twips = str(int(round(float(inches) * 1440)))
+        for edge in ("top", "left", "bottom", "right"):
+            node = OxmlElement(f"w:{edge}")
+            node.set(qn("w:w"), twips)
+            node.set(qn("w:type"), "dxa")
+            margins.append(node)
+        tbl_pr.append(margins)
 
     def _set_table_left_indent(self, table, inches):
         tbl = table._tbl
