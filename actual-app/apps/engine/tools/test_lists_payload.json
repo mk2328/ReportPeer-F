@@ -1,0 +1,66 @@
+{
+  "title": "List Hierarchy Isolated Test",
+  "university": "JUW",
+  "structure": [
+    { "id": "abstract", "title": "Abstract", "level": 1 },
+    { "id": "lof", "title": "List of Figures", "level": 1 },
+    { "id": "lot", "title": "List of Tables", "level": 1 },
+    { "id": "ack", "title": "Acknowledgement", "level": 1 },
+    {
+      "id": "ch1",
+      "title": "CHAPTER 1 - INTRODUCTION",
+      "level": 1,
+      "subitems": [
+        {
+          "id": "ch1-lists",
+          "title": "Lists",
+          "level": 2,
+          "lists": [
+            {
+              "id": "bullet-single",
+              "type": "bullet",
+              "items": [
+                { "id": "b1", "text": "Single-level bullet one", "level": 1 },
+                { "id": "b2", "text": "Single-level bullet two", "level": 1 }
+              ]
+            },
+            {
+              "id": "bullet-multi",
+              "type": "bullet",
+              "items": [
+                { "id": "bm1", "text": "Multilevel bullet parent", "level": 1 },
+                { "id": "bm2", "text": "Multilevel bullet child", "level": 2 },
+                { "id": "bm3", "text": "Multilevel bullet grandchild", "level": 3 },
+                { "id": "bm4", "text": "Multilevel bullet sibling", "level": 2 }
+              ]
+            },
+            {
+              "id": "number-single",
+              "type": "number",
+              "items": [
+                { "id": "n1", "text": "Single-level numbered one", "level": 1 },
+                { "id": "n2", "text": "Single-level numbered two", "level": 1 }
+              ]
+            },
+            {
+              "id": "number-multi",
+              "type": "number",
+              "items": [
+                { "id": "nm1", "text": "Main item", "level": 1 },
+                { "id": "nm2", "text": "Sub item", "level": 2 },
+                { "id": "nm3", "text": "Sub item", "level": 2 },
+                { "id": "nm4", "text": "Main item", "level": 1 }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "contentMap": {
+    "abstract": "Isolated list hierarchy test. This is not a full FYP report.",
+    "ack": "Acknowledgement placeholder for front matter.",
+    "ch1": "This chapter contains only list examples.",
+    "ch1-lists": "The following structured lists exercise single-level and multilevel bullets and numbers."
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "title": "TOC Front Matter Exclusion Test",
+  "university": "JUW",
+  "structure": [
+    { "id": "abstract", "title": "Abstract", "level": 1 },
+    { "id": "lof", "title": "List of Figures", "level": 1 },
+    { "id": "lot", "title": "List of Tables", "level": 1 },
+    { "id": "ack", "title": "Acknowledgement", "level": 1 },
+    {
+      "id": "ch1",
+      "title": "CHAPTER 1 - INTRODUCTION",
+      "level": 1,
+      "subitems": [
+        { "id": "ch1-1", "title": "Overview", "level": 2 },
+        { "id": "ch1-2", "title": "Purpose", "level": 2 }
+      ]
+    },
+    {
+      "id": "ch2",
+      "title": "CHAPTER 2 - REQUIREMENTS",
+      "level": 1,
+      "subitems": [
+        { "id": "ch2-1", "title": "Functional Requirements", "level": 2 }
+      ]
+    }
+  ],
+  "contentMap": {
+    "abstract": "TOC exclusion test abstract.",
+    "ack": "Acknowledgement placeholder.",
+    "ch1": "Chapter 1 body.",
+    "ch1-1": "Overview body.",
+    "ch1-2": "Purpose body.",
+    "ch2": "Chapter 2 body.",
+    "ch2-1": "Functional requirements body."
+  }
+}

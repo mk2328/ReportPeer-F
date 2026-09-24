@@ -1,0 +1,263 @@
+{
+  "layout": {
+    "page_size": "Letter",
+    "paper_side": "single_side",
+    "margins_inches": {
+      "top": 1.0,
+      "bottom": 1.0,
+      "left": 1.5,
+      "right": 1.0
+    },
+    "spacing": {
+      "line_spacing": 1.5,
+      "paragraph_before": 0,
+      "paragraph_after": 0
+    },
+    "title_page": {
+      "logo_width_inches": 1.24,
+      "logo_height_inches": 1.34,
+      "title_font_size": 26,
+      "report_label": "BS (CS) Final Year Project Report",
+      "department_line": "Department of Computer Science and Software Engineering",
+      "university_line": "Jinnah University for Women",
+      "address_line": "5-C Nazimabad, Karachi 74600",
+      "student_tabs_inches": [2.0, 4.5]
+    },
+    "second_cover": {
+      "student_tabs_inches": [1.5, 3.5]
+    },
+    "approval_page": {
+      "logo_width_inches": 0.89,
+      "logo_height_inches": 0.96,
+      "logo_left_inches": 0.84,
+      "student_tabs_inches": [1.44, 3.5],
+      "department_line": "Department of Computer Science and Software Engineering",
+      "university_line": "JINNAH UNIVERSITY FOR WOMEN"
+    }
+  },
+
+  "styles": {
+    "body": {
+      "font": "Times New Roman",
+      "size": 12,
+      "alignment": "justify",
+      "color": "black"
+    },
+
+    "page_number": {
+      "font": "Times New Roman",
+      "size": 10,
+      "position": "bottom_center"
+    },
+
+    "headings": {
+      "JUW_H1": {
+        "size": 20,
+        "bold": true,
+        "all_caps": true,
+        "alignment": "left"
+      },
+      "JUW_CHAPTER_TITLE": {
+        "size": 18,
+        "bold": true,
+        "all_caps": true,
+        "alignment": "left"
+      },
+      "JUW_H2": {
+        "size": 16,
+        "bold": true,
+        "small_caps": true,
+        "alignment": "left"
+      },
+      "JUW_H3": {
+        "size": 14,
+        "bold": true,
+        "small_caps": true,
+        "alignment": "left"
+      },
+      "JUW_H4": {
+        "size": 12,
+        "bold": true,
+        "small_caps": true,
+        "alignment": "left"
+      },
+      "JUW_H5": {
+        "size": 12,
+        "bold": true,
+        "small_caps": true,
+        "alignment": "left"
+      }
+    }
+  },
+
+  "tables": {
+    "alignment": "center",
+    "caption_position": "bottom",
+    "caption_format": "Table {chapter}.{number} {title}",
+    "must_be_referenced": true
+  },
+
+"figures": {
+  "alignment": "center",
+  "width_inches": 5.5,
+  "caption_position": "bottom",
+  "caption_font_size": 12,
+  "space_before_image": 8,
+  "space_after_image": 2,
+  "space_before_caption": 3,
+  "space_after_caption": 10,
+  "caption_format": "Figure {chapter}.{number} {title}",
+  "must_be_referenced": true,
+  "redraw_recommended": true
+},
+
+  "references": {
+    "citation_style": "square_brackets",
+    "example": "[12]",
+    "mandatory": true
+  },
+
+  "toc": {
+    "auto_generate": true,
+    "include_list_of_tables": true,
+    "include_list_of_figures": true
+  },
+
+  "front_matter": {
+    "page_number_style": "roman",
+    "items": [
+      {
+        "title": "Main Cover Page",
+        "page": null,
+        "show_page_number": false
+      },
+      {
+        "title": "Second Cover Page",
+        "page": null,
+        "show_page_number": false
+      },
+      {
+        "title": "Project Approval Form",
+        "page": "i",
+        "show_page_number": false
+      },
+      {
+        "title": "Abstract",
+        "page": "ii",
+        "max_pages": 1
+      },
+      {
+        "title": "Table of Contents",
+        "page": "iii"
+      },
+      {
+        "title": "List of Figures",
+        "page": "iv"
+      },
+      {
+        "title": "List of Tables",
+        "page": "v"
+      },
+      {
+        "title": "Acknowledgements",
+        "page": "vi"
+      }
+    ]
+  },
+
+  "chapters": {
+    "minimum_pages": 5,
+    "introduction_after_heading": true,
+    "minimum_lines_per_heading": 3,
+    "diagram_description_required": true,
+    "captions_required": true,
+    "diagram_reference_required": true
+  },
+
+  "rules": {
+    "font_must_be": "Times New Roman",
+    "text_alignment": "justify",
+    "headings_alignment": "left",
+    "forbidden_words": [
+      "I",
+      "We",
+      "Us",
+      "Our"
+    ],
+    "third_person_only": true,
+    "minimum_lines_per_heading": 3
+  },
+
+  "chapter_structure": [
+    {
+      "chapter": 1,
+      "title": "Introduction",
+      "sections": [
+        "Overview",
+        "Purpose",
+        "Stakeholders",
+        "Benefits",
+        "Background Study"
+      ]
+    },
+    {
+      "chapter": 2,
+      "title": "Requirements",
+      "sections": [
+        "Functional Requirements",
+        "Non-Functional Requirements"
+      ]
+    },
+    {
+      "chapter": 3,
+      "title": "Analysis and Design",
+      "sections": [
+        "System Architecture",
+        "Entity Relationship Diagram",
+        "Project Flow Diagram",
+        "Use Cases",
+        "Activity Diagram",
+        "User Interface Design"
+      ]
+    },
+    {
+      "chapter": 4,
+      "title": "Project Plan",
+      "sections": [
+        "Process Model",
+        "User Stories",
+        "Sprint Planning",
+        "Sprint Sizing",
+        "Timeline with Milestones"
+      ]
+    },
+    {
+      "chapter": 5,
+      "title": "Test Plan",
+      "sections": [
+        "Test Cases",
+        "Automated Testing Tools"
+      ]
+    },
+    {
+      "chapter": 6,
+      "title": "Implementation Details",
+      "sections": [
+        "Tools and Technology",
+        "Data Dictionary",
+        "Version Control",
+        "Web APIs",
+        "Website Development",
+        "Mobile Application Development",
+        "Deployment",
+        "Website Hosting",
+        "Mobile Application Deployment"
+      ]
+    },
+    {
+      "chapter": 7,
+      "title": "Conclusion and Future Work",
+      "sections": []
+    }
+  ]
+}

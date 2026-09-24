@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+apps/web/node_modules/
+
+# Next.js
+.next/
+apps/web/.next/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Python
+venv/
+env/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Build / cache
+*.tsbuildinfo
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,36 @@
+{
+  "title": "Table Caption Isolated Test",
+  "university": "JUW",
+  "structure": [
+    { "id": "abstract", "title": "Abstract", "level": 1 },
+    { "id": "lof", "title": "List of Figures", "level": 1 },
+    { "id": "lot", "title": "List of Tables", "level": 1 },
+    { "id": "ack", "title": "Acknowledgement", "level": 1 },
+    {
+      "id": "ch3",
+      "title": "CHAPTER 3 - ANALYSIS",
+      "level": 1,
+      "subitems": [
+        {
+          "id": "ch3-req",
+          "title": "Functional Requirements",
+          "level": 2,
+          "tables": [
+            {
+              "id": "tbl-1",
+              "caption": "Table 01",
+              "columns": ["Student Roll No", "Column 2"],
+              "data": [["A1", "B1"], ["A2", "B2"]]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "contentMap": {
+    "abstract": "Isolated table caption test.",
+    "ack": "Acknowledgement placeholder.",
+    "ch3": "Chapter 3 contains one table whose editor caption is Table 01.",
+    "ch3-req": "The table below must receive generator numbering and a LOT entry."
+  }
+}

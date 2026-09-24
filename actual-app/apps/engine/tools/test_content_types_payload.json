@@ -1,0 +1,74 @@
+{
+  "title": "Content Types Incremental Test",
+  "university": "JUW",
+  "structure": [
+    { "id": "abstract", "title": "Abstract", "level": 1 },
+    { "id": "lof", "title": "List of Figures", "level": 1 },
+    { "id": "lot", "title": "List of Tables", "level": 1 },
+    { "id": "ack", "title": "Acknowledgement", "level": 1 },
+    {
+      "id": "ch1",
+      "title": "CHAPTER 1 - INTRODUCTION",
+      "level": 1,
+      "subitems": [
+        {
+          "id": "ch1-lists",
+          "title": "Lists",
+          "level": 2,
+          "lists": [
+            { "type": "bullet", "items": ["First bullet item", "Second bullet item"] },
+            { "type": "number", "items": ["First numbered item", "Second numbered item"] }
+          ],
+          "subitems": [
+            {
+              "id": "ch1-lists-sub",
+              "title": "Nested list heading",
+              "level": 3,
+              "subitems": [
+                { "id": "ch1-lists-minor", "title": "Minor list heading", "level": 4 }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "ch1-tables",
+          "title": "Tables",
+          "level": 2,
+          "tables": [
+            {
+              "columns": ["ID", "Item"],
+              "data": [
+                ["T1", "First sample row"],
+                ["T2", "Second sample row"]
+              ],
+              "caption": "Sample requirements table"
+            }
+          ]
+        },
+        {
+          "id": "ch1-figures",
+          "title": "Figures",
+          "level": 2,
+          "figures": [
+            {
+              "path": "C:/Users/muskan/Documents/Report Peer AI -F/foundational/foundational_steps/images/login.jpg",
+              "caption": "Login screen"
+            },
+            {
+              "path": "C:/Users/muskan/Documents/Report Peer AI -F/foundational/foundational_steps/images/login.jpg",
+              "caption": "Signup screen"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "contentMap": {
+    "abstract": "This document is a small incremental test of lists, tables, and figures. It is not a full final year project report.",
+    "ack": "This acknowledgement exists only so front matter remains present during the incremental test.",
+    "ch1": "Chapter 1 contains one or two examples of each content type under test.",
+    "ch1-lists": "The following lists are supplied as structured payload data.",
+    "ch1-tables": "The following table is supplied as structured payload data.",
+    "ch1-figures": "The following figures are supplied as structured payload data."
+  }
+}

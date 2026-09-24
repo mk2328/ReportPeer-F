@@ -1,0 +1,88 @@
+{
+  "title": "JUW Generator Compliance Test",
+  "university": "JUW",
+  "structure": [
+    { "id": "abstract", "title": "Abstract", "level": 1 },
+    { "id": "lof", "title": "List of Figures", "level": 1 },
+    { "id": "lot", "title": "List of Tables", "level": 1 },
+    { "id": "ack", "title": "Acknowledgement", "level": 1 },
+    {
+      "id": "ch1",
+      "title": "CHAPTER 1 - INTRODUCTION",
+      "level": 1,
+      "subitems": [
+        { "id": "ch1-1", "title": "Overview", "level": 2 },
+        { "id": "ch1-2", "title": "Purpose", "level": 2 },
+        { "id": "ch1-3", "title": "Stakeholders", "level": 2 },
+        { "id": "ch1-4", "title": "Benefits", "level": 2 },
+        { "id": "ch1-5", "title": "Background Study", "level": 2 }
+      ]
+    },
+    {
+      "id": "ch2",
+      "title": "CHAPTER 2 - REQUIREMENTS",
+      "level": 1,
+      "subitems": [
+        {
+          "id": "ch2-1",
+          "title": "Functional Requirements",
+          "level": 2,
+          "subitems": [
+            {
+              "id": "ch2-1-1",
+              "title": "Authentication Module",
+              "level": 3,
+              "subitems": [
+                {
+                  "id": "ch2-1-1-1",
+                  "title": "Login Policy",
+                  "level": 4,
+                  "subitems": [
+                    { "id": "ch2-1-1-1-1", "title": "Password Rules", "level": 5 }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        { "id": "ch2-2", "title": "Non-Functional Requirements", "level": 2 }
+      ],
+      "tables": [
+        {
+          "columns": ["ID", "Requirement"],
+          "data": [
+            ["FR-01", "The system shall authenticate registered users."],
+            ["FR-02", "The system shall store project drafts securely."]
+          ],
+          "caption": "Functional requirements summary"
+        }
+      ]
+    },
+    {
+      "id": "ch3",
+      "title": "CHAPTER 3 - ANALYSIS AND DESIGN",
+      "level": 1,
+      "subitems": [
+        { "id": "ch3-1", "title": "System Architecture", "level": 2 }
+      ]
+    }
+  ],
+  "contentMap": {
+    "abstract": "This report describes a web-based academic project documentation system developed for final year students. The system is intended to keep university formatting rules consistent while the report content is written and revised.",
+    "ack": "The authors thank the department faculty and laboratory staff for guidance during the development of this project.",
+    "ch1": "This chapter introduces the project, its purpose, and the academic context in which the system is developed.",
+    "ch1-1": "The proposed system provides a structured workspace for preparing a final year project report according to university guidelines.",
+    "ch1-2": "The purpose of the system is to reduce manual formatting effort and keep chapter structure aligned with departmental requirements.",
+    "ch1-3": "Primary stakeholders include students, supervisors, and departmental reviewers who examine the completed report.",
+    "ch1-4": "The system is expected to improve consistency of submitted reports and reduce time spent on page setup and heading styles.",
+    "ch1-5": "Existing manual report preparation practices rely on local Word templates and repeated correction of formatting mistakes.",
+    "ch2": "This chapter records the functional and non-functional requirements identified for the system.",
+    "ch2-1": "Functional requirements describe the services that the system must provide to student and supervisor users.",
+    "ch2-1-1": "The authentication module controls access to project workspaces.",
+    "ch2-1-1-1": "Login policy defines how registered users gain access to the editor.",
+    "ch2-1-1-1-1": "Password rules require a minimum length and prevent reuse of the previous password.",
+    "ch2-2": "Non-functional requirements cover performance, security, and maintainability constraints.",
+    "ch3": "This chapter outlines the analysis and design of the proposed system.",
+    "ch3-1": "The system architecture separates the web editor from the document generation engine."
+  }
+}

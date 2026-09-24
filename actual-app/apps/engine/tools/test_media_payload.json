@@ -1,0 +1,96 @@
+{
+  "title": "Tables and Figures Isolated Test",
+  "university": "JUW",
+  "structure": [
+    {
+      "id": "abstract",
+      "title": "Abstract",
+      "level": 1
+    },
+    {
+      "id": "lof",
+      "title": "List of Figures",
+      "level": 1
+    },
+    {
+      "id": "lot",
+      "title": "List of Tables",
+      "level": 1
+    },
+    {
+      "id": "ack",
+      "title": "Acknowledgement",
+      "level": 1
+    },
+    {
+      "id": "ch1",
+      "title": "CHAPTER 1 - INTRODUCTION",
+      "level": 1,
+      "subitems": [
+        {
+          "id": "ch1-media",
+          "title": "Media examples",
+          "level": 2,
+          "tables": [
+            {
+              "id": "tbl-1",
+              "caption": "Sample comparison table",
+              "columns": [
+                "Module",
+                "Status"
+              ],
+              "data": [
+                [
+                  "Authentication",
+                  "Complete"
+                ],
+                [
+                  "Reporting",
+                  "In progress"
+                ]
+              ]
+            }
+          ],
+          "figures": [
+            {
+              "id": "fig-1",
+              "caption": "Login screen",
+              "fileName": "media_test_fig1.png",
+              "mimeType": "image/png",
+              "path": "C:\\Users\\muskan\\Documents\\Report Peer AI -F\\actual-app\\apps\\engine\\tools\\media_test_fig1.png"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ch2",
+      "title": "CHAPTER 2 - DESIGN",
+      "level": 1,
+      "subitems": [
+        {
+          "id": "ch2-media",
+          "title": "Design figure",
+          "level": 2,
+          "figures": [
+            {
+              "id": "fig-2",
+              "caption": "Architecture overview",
+              "fileName": "media_test_fig2.png",
+              "mimeType": "image/png",
+              "dataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAKAAAABaCAIAAACwpMoFAAAAo0lEQVR42u3RQQ0AAAjEsBOBOkTg/4kPaDIFa2pah4sFgAVYgAVYgAVYgAELsAALsAALsAADFmABFmABFmABFmDAAizAAizAAizAgAVYgAVYgAVYgAELsAALsAALsAALMGABFmABFmABFmDAAizAAizAAizAgF0ALMACLMACLMACDFiABViABViABRiwAAuwAAuwAAuwAAMWYAEWYAEWYAH+Bby7TlnRZigHjgAAAABJRU5ErkJggg=="
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "contentMap": {
+    "abstract": "Isolated tables and figures test. This is not a full FYP report.",
+    "ack": "Acknowledgement placeholder for front matter.",
+    "ch1": "Chapter 1 contains one table and one figure.",
+    "ch1-media": "Structured table and figure data only. Captions do not include numbers.",
+    "ch2": "Chapter 2 contains a second figure to verify chapter-based numbering.",
+    "ch2-media": "The figure below is stored as a data URL, matching editor uploads."
+  }
+}
