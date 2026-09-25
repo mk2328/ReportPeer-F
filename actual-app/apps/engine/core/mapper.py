@@ -39,12 +39,20 @@ SKIP_ROLES = {
     "table_of_contents",
 }
 
+CITATION_TOKEN_RE = re.compile(r"\[\[ref:([A-Za-z0-9_-]+)\]\]")
+REFERENCE_TITLES = {"references", "reference", "bibliography"}
+
+# Citation numbers are derived per generation, never stored in the payload.
+_CITATIONS = {"numbers": {}, "entries": {}}
+
 
 def render_project(builder, payload: dict):
     """Map editor structure + contentMap onto the DOCX builder."""
     structure = payload.get("structure") or []
     content_map = payload.get("contentMap") or {}
     meta = _project_meta(payload)
+
+    _build_citation_index(structure, content_map, payload.get("references") or [])
 
     roles = _index_front_matter(structure)
 
@@ -64,11 +72,18 @@ def render_project(builder, payload: dict):
         page_break_before=True,
     )
 
+    has_references_section = False
     for item in structure:
         role = _classify(item)
         if role in SKIP_ROLES:
             continue
-        _render_body_item(builder, item, content_map)
+        if _render_body_item(builder, item, content_map):
+            has_references_section = True
+
+    # Cited work needs somewhere to land, so add the section when the report lacks one.
+    if _CITATIONS["numbers"] and not has_references_section:
+        builder.start_unnumbered_section("References")
+        _render_reference_entries(builder)
 
 
 def _project_meta(payload: dict) -> dict:
@@ -168,6 +183,8 @@ def _parse_chapter(item):
 
 
 def _render_body_item(builder, item, content_map):
+    """Render one top-level item; returns True when it is the References section."""
+    is_references = _is_references_item(item)
     chapter = _parse_chapter(item)
     blocks = item.get("blocks")
     has_blocks = isinstance(blocks, list) and len(blocks) > 0
@@ -188,7 +205,9 @@ def _render_body_item(builder, item, content_map):
             _render_lists(builder, item.get("lists"), heading_level=1)
             _render_tables(builder, item.get("tables"))
             _render_figures(builder, item.get("figures"))
-        return
+        if is_references:
+            _render_reference_entries(builder)
+        return is_references
 
     builder.start_unnumbered_section(str(item.get("title") or "Section"))
     if has_blocks:
@@ -202,6 +221,10 @@ def _render_body_item(builder, item, content_map):
         _render_lists(builder, item.get("lists"), heading_level=1)
         _render_tables(builder, item.get("tables"))
         _render_figures(builder, item.get("figures"))
+
+    if is_references:
+        _render_reference_entries(builder)
+    return is_references
 
 
 def _render_heading_tree(builder, item, content_map, level):
@@ -229,7 +252,9 @@ def _render_section_body(builder, item, content_map, heading_level):
                 continue
             block_type = str(block.get("type") or "").strip().lower()
             if block_type == "paragraph":
-                builder.add_paragraphs(str(block.get("text") or ""), level=heading_level)
+                builder.add_paragraphs(
+                    _resolve_citations(str(block.get("text") or "")), level=heading_level
+                )
             elif block_type == "list":
                 list_type = block.get("listType") or block.get("kind") or "bullet"
                 _render_lists(
@@ -253,7 +278,137 @@ def _render_section_body(builder, item, content_map, heading_level):
 def _content_for(item, content_map):
     if not item:
         return ""
-    return content_map.get(item.get("id"), "") or ""
+    return _resolve_citations(content_map.get(item.get("id"), "") or "")
+
+
+def _build_citation_index(structure, content_map, references):
+    """Number references by first citation in document order."""
+    entries = {}
+    for reference in references or []:
+        if isinstance(reference, dict) and reference.get("id"):
+            entries[str(reference["id"])] = reference
+
+    chunks = []
+    _collect_document_text(structure, content_map, chunks)
+
+    numbers = {}
+    for chunk in chunks:
+        for match in CITATION_TOKEN_RE.finditer(chunk):
+            ref_id = match.group(1)
+            if ref_id in numbers or ref_id not in entries:
+                continue
+            numbers[ref_id] = len(numbers) + 1
+
+    _CITATIONS["numbers"] = numbers
+    _CITATIONS["entries"] = entries
+
+
+def _collect_document_text(items, content_map, out):
+    for item in items or []:
+        blocks = item.get("blocks")
+        if isinstance(blocks, list) and blocks:
+            for block in blocks:
+                out.append(_block_text(block))
+        else:
+            out.append(content_map.get(item.get("id"), "") or "")
+        _collect_document_text(item.get("subitems") or [], content_map, out)
+
+
+def _block_text(block):
+    if not isinstance(block, dict):
+        return ""
+    block_type = str(block.get("type") or "").strip().lower()
+    if block_type == "paragraph":
+        return str(block.get("text") or "")
+    if block_type == "list":
+        return "\n".join(
+            str(item.get("text") or "") if isinstance(item, dict) else str(item or "")
+            for item in block.get("items") or []
+        )
+    if block_type == "table":
+        cells = list(block.get("columns") or [])
+        for row in block.get("data") or []:
+            cells.extend(row or [])
+        text = "\n".join(
+            str(cell.get("text") or "") if isinstance(cell, dict) else str(cell or "")
+            for cell in cells
+        )
+        return f"{block.get('caption') or ''}\n{text}"
+    if block_type == "figure":
+        return str(block.get("caption") or "")
+    return ""
+
+
+def _resolve_citations(text):
+    """Replace [[ref:id]] tokens with their derived [n] label."""
+    if not text:
+        return text
+
+    def replace(match):
+        number = _CITATIONS["numbers"].get(match.group(1))
+        return f"[{number}]" if number else ""
+
+    return _normalize_citation_presentation(CITATION_TOKEN_RE.sub(replace, str(text)))
+
+
+def _normalize_citation_presentation(text):
+    """JUW style: `word [1].` — never `word.[1]` or `word[1]`."""
+    result = str(text or "")
+    # Move sentence punct that sat before a citation group to after it.
+    result = re.sub(r"(\S)([.!?])(\[\d+\](?:,\s*\[\d+\])*)", r"\1 \3\2", result)
+    # Ensure a space between a word character and [n].
+    result = re.sub(r"(\w)(\[\d+\])", r"\1 \2", result)
+    # Drop a duplicated period/question/exclamation after the citation.
+    result = re.sub(r"(\[\d+\])([.!?])\2+", r"\1\2", result)
+    return re.sub(r" {2,}", " ", result)
+
+
+def _is_references_item(item):
+    item_id = str(item.get("id") or "").strip().lower()
+    title = str(item.get("title") or "").strip().lower()
+    return item_id in {"refs", "references"} or title in REFERENCE_TITLES
+
+
+def _render_reference_entries(builder):
+    numbers = _CITATIONS["numbers"]
+    entries = _CITATIONS["entries"]
+    for ref_id, number in sorted(numbers.items(), key=lambda pair: pair[1]):
+        reference = entries.get(ref_id)
+        if not reference:
+            continue
+        builder.add_reference_entry(number, _format_reference(reference))
+
+
+def _format_reference(reference):
+    """IEEE-style entry text; the [n] label is added by the builder."""
+    ref_type = str(reference.get("type") or "other").strip().lower()
+    authors = str(reference.get("authors") or "").strip()
+    title = str(reference.get("title") or "").strip()
+    source = str(reference.get("source") or "").strip()
+    details = str(reference.get("details") or "").strip()
+    year = str(reference.get("year") or "").strip()
+    url = str(reference.get("url") or "").strip()
+    accessed = str(reference.get("accessed") or "").strip()
+
+    parts = []
+    if authors:
+        parts.append(authors if authors.endswith(".") else f"{authors},")
+    if title:
+        parts.append(f"{title}." if ref_type == "book" else f'"{title},"')
+    if source:
+        parts.append(f"{source},")
+    if details:
+        parts.append(f"{details},")
+    if year:
+        parts.append(f"{year}.")
+    if url:
+        parts.append(f"[Online]. Available: {url}")
+    if accessed:
+        parts.append(f"[Accessed: {accessed}].")
+
+    text = " ".join(parts)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text or title or "Untitled reference"
 
 
 def _render_tables(builder, tables):
@@ -283,7 +438,7 @@ def _normalize_table_cell(value):
         else:
             bold_value = bool(bold)
         return {
-            "text": str(value.get("text") or ""),
+            "text": _resolve_citations(str(value.get("text") or "")),
             "background": str(value.get("background") or "").lstrip("#") or None,
             "textColor": str(value.get("textColor") or value.get("text_color") or "").lstrip("#")
             or None,
@@ -293,7 +448,7 @@ def _normalize_table_cell(value):
             "rowspan": rowspan if rowspan > 1 else None,
             "hidden": bool(value.get("hidden")) or None,
         }
-    return {"text": str(value or "")}
+    return {"text": _resolve_citations(str(value or ""))}
 
 
 def _normalize_table(table):
@@ -314,7 +469,7 @@ def _clean_caption(text, kind):
     # Strip only generator-assigned numbers such as "Table 3.1." / "Figure 1.2."
     # Do not wipe student text like "Table 01".
     cleaned = re.sub(rf"^{kind}\s+\d+\.\d+\.?\s*", "", cleaned, flags=re.I)
-    return cleaned
+    return _resolve_citations(cleaned)
 
 
 def _render_lists(builder, lists, heading_level=2):
@@ -340,7 +495,7 @@ def _normalize_list_items(block):
             text = str(item).strip()
             level = default_level
         if text:
-            normalized.append((text, level))
+            normalized.append((_resolve_citations(text), level))
     return normalized
 
 

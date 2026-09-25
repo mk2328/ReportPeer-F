@@ -199,6 +199,60 @@ class DocumentBuilder:
                 paragraphs.append(paragraph)
         return paragraphs
 
+    def add_reference_entry(self, number, text):
+        """
+        One References entry: [n] at the body left margin, then a space, then the
+        citation text. Wrapped lines use a hanging indent (no tabs/spaces).
+        """
+        body_text = str(text or "").strip()
+        if not body_text:
+            return None
+
+        paragraph = self.doc.add_paragraph()
+        paragraph.style = self.doc.styles["Normal"]
+        paragraph_format = paragraph.paragraph_format
+        # First line at margin (left 0); continuation lines hang by 0.5".
+        hang_inches = 0.5
+        paragraph_format.left_indent = Inches(hang_inches)
+        paragraph_format.first_line_indent = Inches(-hang_inches)
+        paragraph_format.line_spacing = (
+            self.config.get("layout", {}).get("spacing", {}).get("line_spacing", 1.5)
+        )
+        paragraph_format.space_before = Pt(0)
+        paragraph_format.space_after = Pt(0)
+        paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+
+        p_pr = paragraph._element.get_or_add_pPr()
+        existing = p_pr.find(qn("w:spacing"))
+        if existing is not None:
+            p_pr.remove(existing)
+        spacing = OxmlElement("w:spacing")
+        spacing.set(qn("w:before"), "0")
+        spacing.set(qn("w:after"), "0")
+        spacing.set(qn("w:beforeAutospacing"), "0")
+        spacing.set(qn("w:afterAutospacing"), "0")
+        spacing.set(qn("w:line"), "360")
+        spacing.set(qn("w:lineRule"), "auto")
+        p_pr.append(spacing)
+        snap = p_pr.find(qn("w:snapToGrid"))
+        if snap is None:
+            snap = OxmlElement("w:snapToGrid")
+            p_pr.append(snap)
+        snap.set(qn("w:val"), "0")
+        jc = p_pr.find(qn("w:jc"))
+        if jc is None:
+            jc = OxmlElement("w:jc")
+            p_pr.append(jc)
+        jc.set(qn("w:val"), "both")
+
+        body = self.config.get("styles", {}).get("body", {})
+        size_pt = body.get("size", 12)
+        # One space after [n]; no tab.
+        run = paragraph.add_run(f"[{number}] {body_text}")
+        formatters.apply_body_run(run, size_pt)
+        run.font.color.rgb = RGBColor(0, 0, 0)
+        return paragraph
+
     def _add_list_item(self, text, marker, level=1, heading_level=2):
         paragraph = self.doc.add_paragraph()
         paragraph.style = self.doc.styles["Normal"]

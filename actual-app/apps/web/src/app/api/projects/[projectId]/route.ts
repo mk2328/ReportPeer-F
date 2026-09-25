@@ -42,7 +42,7 @@ export async function PATCH(req: Request, { params }: { params: { projectId: str
 
     const { projectId } = params;
     const body = await req.json();
-    const { structure, contentMap, projectTitle, projectAdvisor, department, submissionMonthYear, teamMembers, degree, faculty, city, universityName, internalExaminer, externalExaminer, headOfDepartment, approvalDate, title, universityLogo, internalExaminerDesignation, externalExaminerDesignation, externalExaminerOrganization } = body;
+    const { structure, contentMap, references, projectTitle, projectAdvisor, department, submissionMonthYear, teamMembers, degree, faculty, city, universityName, internalExaminer, externalExaminer, headOfDepartment, approvalDate, title, universityLogo, internalExaminerDesignation, externalExaminerDesignation, externalExaminerOrganization } = body;
 
     if (mongoose.connection.readyState !== 1) {
       await mongoose.connect(process.env.MONGODB_URI!);
@@ -53,6 +53,7 @@ export async function PATCH(req: Request, { params }: { params: { projectId: str
     };
     if (structure !== undefined) $set.structure = structure;
     if (contentMap !== undefined) $set.contentMap = contentMap;
+    if (references !== undefined) $set.references = references;
     if (projectTitle !== undefined) $set.projectTitle = projectTitle;
     if (title !== undefined) $set.title = title;
     if (projectAdvisor !== undefined) $set.projectAdvisor = projectAdvisor;

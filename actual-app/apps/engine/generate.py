@@ -11,7 +11,7 @@ from core.document import DocumentBuilder
 from core.file_io import remove_empty_paragraphs_before_page_break_before
 from core.formatters import reapply_generated_styles
 from core.mapper import render_project
-from core.word_com import update_word_fields
+from core.word_com import export_docx_to_pdf, update_word_fields
 
 
 def generate_report(payload: dict, output_path: str, university: str | None = None) -> str:
@@ -43,6 +43,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Generate a formatted FYP DOCX.")
     parser.add_argument("--input", required=True, help="Path to project JSON payload")
     parser.add_argument("--output", required=True, help="Path to write the .docx")
+    parser.add_argument(
+        "--pdf",
+        default=None,
+        help="Optional path to also write a PDF via Word COM (DOCX is always generated first)",
+    )
     parser.add_argument("--university", default=None, help="University slug (default: from payload or juw)")
     args = parser.parse_args(argv)
 
@@ -50,7 +55,25 @@ def main(argv=None):
         with open(args.input, "r", encoding="utf-8-sig") as handle:
             payload = json.load(handle)
         path = generate_report(payload, args.output, args.university)
-        print(json.dumps({"ok": True, "output": path}))
+        result = {"ok": True, "output": path}
+        if args.pdf:
+            pdf_ok = export_docx_to_pdf(path, args.pdf)
+            if not pdf_ok:
+                print(
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "error": (
+                                "PDF export failed. Microsoft Word must be installed "
+                                "and available via Word COM on this machine."
+                            ),
+                        }
+                    ),
+                    file=sys.stderr,
+                )
+                return 1
+            result["pdf"] = str(Path(args.pdf).resolve())
+        print(json.dumps(result))
         return 0
     except Exception as error:
         print(json.dumps({"ok": False, "error": str(error)}), file=sys.stderr)

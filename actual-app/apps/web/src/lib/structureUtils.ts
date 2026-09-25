@@ -114,7 +114,9 @@ export function setTableCell<T extends Pick<ContentTable, "columns" | "data">>(
 }
 
 /** Clear merges after structural row/column edits. */
-export function clearTableMerges(table: ContentTable): ContentTable {
+export function clearTableMerges<T extends Pick<ContentTable, "columns" | "data">>(
+  table: T
+): T {
   return {
     ...table,
     columns: table.columns.map((cell) => {
@@ -132,7 +134,7 @@ export function clearTableMerges(table: ContentTable): ContentTable {
         });
       })
     ),
-  };
+  } as T;
 }
 
 function cellKey(ref: TableCellRef): string {

@@ -98,3 +98,76 @@ def update_word_fields(doc_path: str, lists_only: bool = False, page_numbers_onl
             wait_until_unlocked(abs_path)
         except OSError:
             pass
+
+
+def export_docx_to_pdf(docx_path: str, pdf_path: str) -> bool:
+    """
+    Convert an existing DOCX to PDF via desktop Word (ExportAsFixedFormat).
+    Returns True when the PDF exists and is non-empty.
+    """
+    try:
+        import pythoncom
+        import win32com.client
+    except ImportError:
+        print("PDF export failed: pywin32 is not installed.")
+        return False
+
+    abs_docx = os.path.abspath(docx_path)
+    abs_pdf = os.path.abspath(pdf_path)
+    os.makedirs(os.path.dirname(abs_pdf) or ".", exist_ok=True)
+    if os.path.exists(abs_pdf):
+        try:
+            os.remove(abs_pdf)
+        except OSError:
+            pass
+
+    word = None
+    document = None
+    com_ready = False
+    try:
+        pythoncom.CoInitialize()
+        com_ready = True
+        wait_until_unlocked(abs_docx)
+
+        word = win32com.client.DispatchEx("Word.Application")
+        word.Visible = False
+        word.DisplayAlerts = 0
+        document = word.Documents.Open(abs_docx, False, False, False)
+        # 17 = wdExportFormatPDF
+        document.ExportAsFixedFormat(abs_pdf, 17)
+        document.Close(SaveChanges=0)
+        document = None
+        word.Quit()
+        word = None
+        return os.path.exists(abs_pdf) and os.path.getsize(abs_pdf) > 0
+    except Exception as error:
+        print(f"PDF export failed: {error}")
+        return False
+    finally:
+        if document is not None:
+            try:
+                document.Close(SaveChanges=0)
+            except Exception:
+                pass
+            document = None
+        if word is not None:
+            try:
+                word.Quit()
+            except Exception:
+                pass
+            word = None
+        gc.collect()
+        if com_ready:
+            try:
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
+        try:
+            wait_until_unlocked(abs_docx)
+        except OSError:
+            pass
+        if os.path.exists(abs_pdf):
+            try:
+                wait_until_unlocked(abs_pdf)
+            except OSError:
+                pass

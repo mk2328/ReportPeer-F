@@ -34,7 +34,8 @@ export interface IReport extends Document {
   contentMap: Record<string, string>; 
   // ---------------------------------------------------------
 
-  references: string[]; 
+  /** Reference entries ({ id, type, authors, ... }); legacy docs may hold strings. */
+  references: any[]; 
   appendices: {
     abbreviations: { term: string; definition: string }[];
   };
@@ -81,7 +82,7 @@ const ReportSchema = new Schema<IReport>(
     contentMap: { type: Schema.Types.Mixed, default: {} },
     // ----------------------------
 
-    references: [{ type: String }],
+    references: { type: Schema.Types.Mixed, default: [] },
     appendices: {
       abbreviations: [
         {

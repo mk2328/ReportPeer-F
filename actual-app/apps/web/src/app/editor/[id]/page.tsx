@@ -8,7 +8,7 @@ import {
     ChevronLeft, Sparkles, Loader2, ChevronRight, ChevronDown,
     PanelRightOpen, PanelRightClose, PanelLeftOpen, PanelLeftClose, Send, Bot, Plus, FileText, Save, FileDown,
     List, ListOrdered, IndentIncrease, IndentDecrease, Trash2,
-    Table2, ImagePlus, Pencil, Bold, AlignLeft, AlignCenter, AlignRight
+    Table2, ImagePlus, Pencil, Bold, AlignLeft, AlignCenter, AlignRight, Quote
 } from "lucide-react";
 import {
     type ContentBlock,
@@ -36,6 +36,19 @@ import {
     formatHeadingLabel,
     unmergeTableCell,
 } from "@/lib/structureUtils";
+import {
+    type ReferenceEntry,
+    type ReferenceType,
+    REFERENCE_TYPES,
+    buildCitationNumbers,
+    citationToken,
+    countCitations,
+    emptyReference,
+    formatReference,
+    insertCitationAt,
+    normalizeReferences,
+    resolveCitations,
+} from "@/lib/references";
 
 interface TeamMember {
     name: string;
@@ -270,6 +283,7 @@ export default function EditorPage() {
     const [isLoading, setIsLoading] = useState(true);
     const [isSaving, setIsSaving] = useState(false);
     const [isGenerating, setIsGenerating] = useState(false);
+    const [generatingFormat, setGeneratingFormat] = useState<"docx" | "pdf" | null>(null);
     const [activeBlockId, setActiveBlockId] = useState<string | null>(null);
     const [pendingFocusId, setPendingFocusId] = useState<string | null>(null);
     const [selectedTableCells, setSelectedTableCells] = useState<TableCellRef[]>([]);
@@ -277,6 +291,11 @@ export default function EditorPage() {
     const imageInputRef = useRef<HTMLInputElement>(null);
     const replaceFigureInputRef = useRef<HTMLInputElement>(null);
     const [replacingFigureId, setReplacingFigureId] = useState<string | null>(null);
+    const [references, setReferences] = useState<ReferenceEntry[]>([]);
+    const [showReferences, setShowReferences] = useState(false);
+    const [referenceDraft, setReferenceDraft] = useState<ReferenceEntry | null>(null);
+    /** Caret in the last focused paragraph, so citations insert where the user was typing. */
+    const paragraphCaretRef = useRef<{ blockId: string; start: number; end: number } | null>(null);
 
     // --- 1. Load Data ---
     useEffect(() => {
@@ -289,6 +308,7 @@ export default function EditorPage() {
                 const numbered = renumberStructure(data.structure || []);
                 setChapters(numbered);
                 setContentMap(data.contentMap || {});
+                setReferences(normalizeReferences(data.references));
                 setCoverMeta({
                     ...defaultCoverMeta(),
                     projectTitle: data.projectTitle || data.title || "",
@@ -375,6 +395,7 @@ export default function EditorPage() {
             body: JSON.stringify({
                 contentMap,
                 structure: chapters,
+                references,
                 title: coverMeta.projectTitle || undefined,
                 projectTitle: coverMeta.projectTitle,
                 projectAdvisor: coverMeta.projectAdvisor,
@@ -408,17 +429,23 @@ export default function EditorPage() {
         }
     };
 
-    const handleGenerate = async () => {
+    const handleGenerate = async (format: "docx" | "pdf" = "docx") => {
         setIsGenerating(true);
+        setGeneratingFormat(format);
         try {
             await persistProject();
             const response = await fetch(`/api/projects/${id}/generate`, {
                 method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ format }),
             });
 
             if (!response.ok) {
                 const errorData = await response.json().catch(() => ({}));
-                throw new Error(errorData.error || "Failed to generate report");
+                throw new Error(
+                    errorData.error ||
+                        (format === "pdf" ? "Failed to generate PDF" : "Failed to generate DOCX")
+                );
             }
 
             const blob = await response.blob();
@@ -427,7 +454,7 @@ export default function EditorPage() {
             const header = response.headers.get("Content-Disposition") || "";
             const match = header.match(/filename="([^"]+)"/);
             link.href = downloadUrl;
-            link.download = match?.[1] || "FYP_Report.docx";
+            link.download = match?.[1] || (format === "pdf" ? "FYP_Report.pdf" : "FYP_Report.docx");
             document.body.appendChild(link);
             link.click();
             link.remove();
@@ -437,6 +464,7 @@ export default function EditorPage() {
             alert(err instanceof Error ? err.message : "Failed to generate report");
         } finally {
             setIsGenerating(false);
+            setGeneratingFormat(null);
         }
     };
 
@@ -928,6 +956,107 @@ export default function EditorPage() {
         insertBlockAfter({ id: newId("p"), type: "paragraph", text: "" });
     };
 
+    // --- References + citations ---
+    const citationNumbers = buildCitationNumbers(chapters, contentMap, references);
+
+    const saveReferenceDraft = () => {
+        if (!referenceDraft) return;
+        if (!referenceDraft.title.trim() && !referenceDraft.authors.trim()) {
+            alert("Add at least a title or an author before saving the reference.");
+            return;
+        }
+        setReferences((current) =>
+            current.some((entry) => entry.id === referenceDraft.id)
+                ? current.map((entry) => (entry.id === referenceDraft.id ? referenceDraft : entry))
+                : [...current, referenceDraft]
+        );
+        setReferenceDraft(null);
+    };
+
+    const deleteReference = (reference: ReferenceEntry) => {
+        const uses = countCitations(chapters, contentMap, reference.id);
+        if (uses > 0) {
+            const label = uses === 1 ? "1 place" : `${uses} places`;
+            const confirmed = window.confirm(
+                `"${reference.title || "This reference"}" is cited in ${label}.\n\n` +
+                    "Deleting it will remove those citations from the report and renumber the rest. Continue?"
+            );
+            if (!confirmed) return;
+        }
+        setReferences((current) => current.filter((entry) => entry.id !== reference.id));
+        if (uses > 0) removeCitationTokens(reference.id);
+        if (referenceDraft?.id === reference.id) setReferenceDraft(null);
+    };
+
+    /** Strip a deleted reference's tokens from every block in every section. */
+    const removeCitationTokens = (referenceId: string) => {
+        const token = citationToken(referenceId);
+        const strip = (text: string) => text.split(token).join("");
+        const walk = (items: StructureItem[]): StructureItem[] =>
+            items.map((item) => ({
+                ...item,
+                blocks: item.blocks?.map((block) => {
+                    if (block.type === "paragraph") return { ...block, text: strip(block.text) };
+                    if (block.type === "list") {
+                        return {
+                            ...block,
+                            items: block.items.map((entry) => ({ ...entry, text: strip(entry.text) })),
+                        };
+                    }
+                    if (block.type === "figure") return { ...block, caption: strip(block.caption) };
+                    if (block.type === "table") {
+                        return {
+                            ...block,
+                            caption: strip(block.caption),
+                            columns: block.columns.map((cell) =>
+                                typeof cell === "string" ? strip(cell) : { ...cell, text: strip(cell.text) }
+                            ),
+                            data: block.data.map((row) =>
+                                row.map((cell) =>
+                                    typeof cell === "string" ? strip(cell) : { ...cell, text: strip(cell.text) }
+                                )
+                            ),
+                        };
+                    }
+                    return block;
+                }),
+                subitems: item.subitems?.length ? walk(item.subitems) : item.subitems,
+            }));
+
+        setChapters((prev) => walk(prev));
+        setContentMap((prev) => {
+            const next: Record<string, string> = {};
+            for (const [key, value] of Object.entries(prev)) next[key] = strip(value);
+            return next;
+        });
+    };
+
+    const insertCitation = (reference: ReferenceEntry) => {
+        const caret = paragraphCaretRef.current;
+        const target =
+            (caret && activeBlocks.find((block) => block.id === caret.blockId && block.type === "paragraph")) ||
+            activeBlocks.find((block) => block.id === activeBlockId && block.type === "paragraph") ||
+            [...activeBlocks].reverse().find((block) => block.type === "paragraph");
+        if (!target || target.type !== "paragraph") {
+            alert("Select a paragraph first, then insert the citation.");
+            return;
+        }
+        const token = citationToken(reference.id);
+        const usingCaret = caret?.blockId === target.id;
+        const start = usingCaret ? caret!.start : target.text.length;
+        const end = usingCaret ? caret!.end : target.text.length;
+        const inserted = insertCitationAt(target.text, start, end, token);
+        updateBlock(target.id, (current) =>
+            current.type === "paragraph" ? { ...current, text: inserted.text } : current
+        );
+        setActiveBlockId(target.id);
+        paragraphCaretRef.current = {
+            blockId: target.id,
+            start: inserted.caret,
+            end: inserted.caret,
+        };
+    };
+
     if (isLoading) return <div className="h-screen flex items-center justify-center"><Loader2 className="animate-spin h-8 w-8 text-[#6F155F]" /></div>;
 
     return (
@@ -947,6 +1076,14 @@ export default function EditorPage() {
                         {showCoverMeta ? "Hide Cover Details" : "Title & Approval"}
                     </button>
                     <button
+                        onClick={() => setShowReferences((open) => !open)}
+                        className="text-xs flex items-center gap-1.5 text-slate-500 hover:text-[#6F155F] px-2 py-1.5 rounded-md hover:bg-slate-50 transition-colors"
+                        type="button"
+                    >
+                        <Quote className="h-3.5 w-3.5" />
+                        {showReferences ? "Hide References" : "References"}
+                    </button>
+                    <button
                         onClick={handleSave}
                         disabled={isSaving || isGenerating}
                         className="text-xs flex items-center gap-1.5 text-slate-500 hover:text-[#6F155F] px-2 py-1.5 rounded-md hover:bg-slate-50 transition-colors disabled:opacity-50"
@@ -954,14 +1091,25 @@ export default function EditorPage() {
                         {isSaving ? "Saving..." : <><Save className="h-3.5 w-3.5" /> Save</>}
                     </button>
                     <button
-                        onClick={handleGenerate}
+                        onClick={() => handleGenerate("docx")}
                         disabled={isSaving || isGenerating}
                         className="text-xs flex items-center gap-1.5 rounded-lg bg-[#6F155F] hover:bg-[#57104b] text-white px-3.5 py-1.5 font-medium shadow-sm disabled:opacity-50 transition-colors"
                     >
-                        {isGenerating ? (
-                            <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Generating...</>
+                        {isGenerating && generatingFormat === "docx" ? (
+                            <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Generating DOCX...</>
                         ) : (
-                            <><FileDown className="h-3.5 w-3.5" /> Generate Report</>
+                            <><FileDown className="h-3.5 w-3.5" /> Generate DOCX</>
+                        )}
+                    </button>
+                    <button
+                        onClick={() => handleGenerate("pdf")}
+                        disabled={isSaving || isGenerating}
+                        className="text-xs flex items-center gap-1.5 rounded-lg border border-[#6F155F] bg-white hover:bg-[#F2EBF1] text-[#6F155F] px-3.5 py-1.5 font-medium shadow-sm disabled:opacity-50 transition-colors"
+                    >
+                        {isGenerating && generatingFormat === "pdf" ? (
+                            <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Generating PDF...</>
+                        ) : (
+                            <><FileText className="h-3.5 w-3.5" /> Generate PDF</>
                         )}
                     </button>
                     <button onClick={() => setIsAiSidebarOpen(!isAiSidebarOpen)} className="p-2 text-slate-500 hover:text-[#6F155F] hover:bg-slate-50 rounded-lg transition-colors" title={isAiSidebarOpen ? "Collapse AI" : "Expand AI"}>
@@ -1219,6 +1367,196 @@ export default function EditorPage() {
                                 </div>
                             </div>
                         )}
+                        {showReferences && (
+                            <div className="mx-6 sm:mx-8 mt-6 mb-4 border border-slate-200 rounded-lg p-4 bg-slate-50/90 space-y-3">
+                                <div className="flex items-center justify-between gap-2">
+                                    <h3 className="text-sm font-semibold text-slate-800">References &amp; Citations</h3>
+                                    <button
+                                        type="button"
+                                        onClick={() => setReferenceDraft(emptyReference())}
+                                        className="text-[11px] border border-gray-200 bg-white rounded px-2 py-1 hover:border-[#6F155F] hover:text-[#6F155F]"
+                                    >
+                                        Add reference
+                                    </button>
+                                </div>
+                                <p className="text-xs text-slate-500">
+                                    Numbers are assigned automatically by first citation order. Place the caret in a
+                                    paragraph, then use Cite. Only cited references appear in the final References section.
+                                </p>
+
+                                {references.length === 0 ? (
+                                    <p className="text-xs text-slate-400">No references yet.</p>
+                                ) : (
+                                    <ul className="space-y-2">
+                                        {references.map((reference) => {
+                                            const number = citationNumbers.get(reference.id);
+                                            return (
+                                                <li
+                                                    key={reference.id}
+                                                    className="flex items-start gap-2 rounded border border-gray-200 bg-white px-2.5 py-2"
+                                                >
+                                                    <span
+                                                        className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium ${number ? "bg-[#F2EBF1] text-[#6F155F]" : "bg-slate-100 text-slate-400"}`}
+                                                        title={number ? `Cited as [${number}]` : "Not cited yet"}
+                                                    >
+                                                        {number ? `[${number}]` : "—"}
+                                                    </span>
+                                                    <div className="min-w-0 flex-1">
+                                                        <div className="text-xs font-serif text-slate-700 break-words">
+                                                            {formatReference(reference)}
+                                                        </div>
+                                                        <div className="text-[10px] uppercase tracking-wider text-slate-400 mt-0.5">
+                                                            {REFERENCE_TYPES.find((t) => t.value === reference.type)?.label || "Other"}
+                                                        </div>
+                                                    </div>
+                                                    <div className="flex shrink-0 items-center gap-1">
+                                                        <button
+                                                            type="button"
+                                                            title="Insert citation at caret"
+                                                            onClick={() => insertCitation(reference)}
+                                                            className="text-[11px] border border-gray-200 rounded px-2 py-1 hover:border-[#6F155F] hover:text-[#6F155F]"
+                                                        >
+                                                            Cite
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            title="Edit reference"
+                                                            onClick={() => setReferenceDraft({ ...reference })}
+                                                            className="p-1 text-gray-400 hover:text-[#6F155F]"
+                                                        >
+                                                            <Pencil className="h-3.5 w-3.5" />
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            title="Delete reference"
+                                                            onClick={() => deleteReference(reference)}
+                                                            className="p-1 text-gray-300 hover:text-red-500"
+                                                        >
+                                                            <Trash2 className="h-3.5 w-3.5" />
+                                                        </button>
+                                                    </div>
+                                                </li>
+                                            );
+                                        })}
+                                    </ul>
+                                )}
+
+                                {referenceDraft && (
+                                    <div className="rounded border border-[#6F155F]/30 bg-white p-3 space-y-2">
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                            <label className="block text-xs text-slate-600">
+                                                Type
+                                                <select
+                                                    className="mt-1 w-full border border-gray-200 rounded-md px-2 py-1.5 text-sm bg-white"
+                                                    value={referenceDraft.type}
+                                                    onChange={(e) =>
+                                                        setReferenceDraft((draft) =>
+                                                            draft ? { ...draft, type: e.target.value as ReferenceType } : draft
+                                                        )
+                                                    }
+                                                >
+                                                    {REFERENCE_TYPES.map((option) => (
+                                                        <option key={option.value} value={option.value}>
+                                                            {option.label}
+                                                        </option>
+                                                    ))}
+                                                </select>
+                                            </label>
+                                            <label className="block text-xs text-slate-600">
+                                                Year
+                                                <input
+                                                    className="mt-1 w-full border border-gray-200 rounded-md px-2 py-1.5 text-sm"
+                                                    value={referenceDraft.year}
+                                                    onChange={(e) =>
+                                                        setReferenceDraft((draft) => (draft ? { ...draft, year: e.target.value } : draft))
+                                                    }
+                                                    placeholder="e.g. 2024"
+                                                />
+                                            </label>
+                                            <label className="block text-xs text-slate-600 sm:col-span-2">
+                                                Authors
+                                                <input
+                                                    className="mt-1 w-full border border-gray-200 rounded-md px-2 py-1.5 text-sm"
+                                                    value={referenceDraft.authors}
+                                                    onChange={(e) =>
+                                                        setReferenceDraft((draft) => (draft ? { ...draft, authors: e.target.value } : draft))
+                                                    }
+                                                    placeholder="A. Khan, B. Ahmed"
+                                                />
+                                            </label>
+                                            <label className="block text-xs text-slate-600 sm:col-span-2">
+                                                Title
+                                                <input
+                                                    className="mt-1 w-full border border-gray-200 rounded-md px-2 py-1.5 text-sm"
+                                                    value={referenceDraft.title}
+                                                    onChange={(e) =>
+                                                        setReferenceDraft((draft) => (draft ? { ...draft, title: e.target.value } : draft))
+                                                    }
+                                                />
+                                            </label>
+                                            <label className="block text-xs text-slate-600">
+                                                Publisher / Journal / Site
+                                                <input
+                                                    className="mt-1 w-full border border-gray-200 rounded-md px-2 py-1.5 text-sm"
+                                                    value={referenceDraft.source}
+                                                    onChange={(e) =>
+                                                        setReferenceDraft((draft) => (draft ? { ...draft, source: e.target.value } : draft))
+                                                    }
+                                                />
+                                            </label>
+                                            <label className="block text-xs text-slate-600">
+                                                Volume / Pages / Edition
+                                                <input
+                                                    className="mt-1 w-full border border-gray-200 rounded-md px-2 py-1.5 text-sm"
+                                                    value={referenceDraft.details}
+                                                    onChange={(e) =>
+                                                        setReferenceDraft((draft) => (draft ? { ...draft, details: e.target.value } : draft))
+                                                    }
+                                                    placeholder="vol. 12, no. 3, pp. 45-52"
+                                                />
+                                            </label>
+                                            <label className="block text-xs text-slate-600">
+                                                URL
+                                                <input
+                                                    className="mt-1 w-full border border-gray-200 rounded-md px-2 py-1.5 text-sm"
+                                                    value={referenceDraft.url}
+                                                    onChange={(e) =>
+                                                        setReferenceDraft((draft) => (draft ? { ...draft, url: e.target.value } : draft))
+                                                    }
+                                                />
+                                            </label>
+                                            <label className="block text-xs text-slate-600">
+                                                Accessed on
+                                                <input
+                                                    className="mt-1 w-full border border-gray-200 rounded-md px-2 py-1.5 text-sm"
+                                                    value={referenceDraft.accessed}
+                                                    onChange={(e) =>
+                                                        setReferenceDraft((draft) => (draft ? { ...draft, accessed: e.target.value } : draft))
+                                                    }
+                                                    placeholder="12-Sep-2026"
+                                                />
+                                            </label>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                            <button
+                                                type="button"
+                                                onClick={saveReferenceDraft}
+                                                className="text-xs rounded-md bg-[#6F155F] hover:bg-[#57104b] text-white px-3 py-1.5 font-medium"
+                                            >
+                                                Save reference
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setReferenceDraft(null)}
+                                                className="text-xs text-slate-500 hover:text-[#6F155F] px-2 py-1.5"
+                                            >
+                                                Cancel
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        )}
                         <div className="min-w-0 max-w-full">
                             <div className="sticky top-0 z-20 bg-white rounded-t-xl shadow-[0_2px_8px_rgba(15,23,42,0.06)]">
                                 <div className="px-5 sm:px-8 py-2.5 flex items-center gap-2 flex-wrap bg-[#6F155F] border-b border-[#57104b] rounded-t-xl">
@@ -1296,8 +1634,21 @@ export default function EditorPage() {
                                                     value={block.text}
                                                     rows={1}
                                                     onFocus={() => setActiveBlockId(block.id)}
+                                                    onSelect={(e) => {
+                                                        const el = e.currentTarget;
+                                                        paragraphCaretRef.current = {
+                                                            blockId: block.id,
+                                                            start: el.selectionStart,
+                                                            end: el.selectionEnd,
+                                                        };
+                                                    }}
                                                     onChange={(e) => {
                                                         autoGrowTextarea(e.currentTarget);
+                                                        paragraphCaretRef.current = {
+                                                            blockId: block.id,
+                                                            start: e.currentTarget.selectionStart,
+                                                            end: e.currentTarget.selectionEnd,
+                                                        };
                                                         updateBlock(block.id, (current) =>
                                                             current.type === "paragraph"
                                                                 ? { ...current, text: e.target.value }
@@ -1315,6 +1666,11 @@ export default function EditorPage() {
                                                 >
                                                     <Trash2 className="h-3.5 w-3.5" />
                                                 </button>
+                                                {selected && block.text.includes("[[ref:") && (
+                                                    <p className="mt-1 border-l-2 border-[#6F155F]/30 pl-2 text-[11px] leading-relaxed text-slate-400">
+                                                        Preview: {resolveCitations(block.text, citationNumbers)}
+                                                    </p>
+                                                )}
                                             </div>
                                         );
                                     }

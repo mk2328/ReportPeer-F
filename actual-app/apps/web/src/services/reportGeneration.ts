@@ -110,11 +110,25 @@ export type ReportMeta = {
   };
 };
 
+export type ReportReference = {
+  id?: string;
+  type?: string;
+  authors?: string;
+  title?: string;
+  year?: string;
+  source?: string;
+  details?: string;
+  url?: string;
+  accessed?: string;
+};
+
 export type ReportProjectInput = {
   title?: string;
   university?: string;
   structure: ReportStructureItem[];
   contentMap: Record<string, string>;
+  /** Reference entries; citation numbers are derived, never stored. */
+  references?: ReportReference[];
   meta?: ReportMeta;
   projectTitle?: string;
   projectAdvisor?: string;
@@ -131,7 +145,14 @@ export type ReportProjectInput = {
 export type GeneratedReport = {
   buffer: Buffer;
   filename: string;
+  contentType: string;
 };
+
+export type ReportExportFormat = "docx" | "pdf";
+
+const DOCX_CONTENT_TYPE =
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const PDF_CONTENT_TYPE = "application/pdf";
 
 const ENGINE_ROOT = path.resolve(
   process.env.REPORTPEER_ENGINE_ROOT || path.join(process.cwd(), "..", "engine")
@@ -139,15 +160,20 @@ const ENGINE_ROOT = path.resolve(
 
 const GENERATE_TIMEOUT_MS = 120_000;
 
-export async function generateProjectDocx(project: ReportProjectInput): Promise<GeneratedReport> {
+export async function generateProjectDocx(
+  project: ReportProjectInput,
+  options?: { format?: ReportExportFormat }
+): Promise<GeneratedReport> {
   if (!Array.isArray(project.structure) || project.structure.length === 0) {
     throw new ReportGenerationError("Project structure is empty.", 400);
   }
 
+  const format: ReportExportFormat = options?.format === "pdf" ? "pdf" : "docx";
   const pythonPath = await resolvePythonPath();
   const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "reportpeer-"));
   const inputPath = path.join(workDir, "payload.json");
   const outputPath = path.join(workDir, "report.docx");
+  const pdfPath = path.join(workDir, "report.pdf");
 
   let logoPath: string | undefined;
   const logoDataUrl =
@@ -185,6 +211,7 @@ export async function generateProjectDocx(project: ReportProjectInput): Promise<
     university: project.university || "JUW",
     structure: project.structure,
     contentMap: project.contentMap || {},
+    references: project.references || [],
     meta: {
       ...(project.meta || {}),
       projectTitle:
@@ -239,26 +266,33 @@ export async function generateProjectDocx(project: ReportProjectInput): Promise<
   try {
     await fs.writeFile(inputPath, JSON.stringify(payload), "utf8");
 
-    const result = await runProcess(
-      pythonPath,
-      ["generate.py", "--input", inputPath, "--output", outputPath],
-      ENGINE_ROOT,
-      GENERATE_TIMEOUT_MS
-    );
+    const args = ["generate.py", "--input", inputPath, "--output", outputPath];
+    if (format === "pdf") {
+      args.push("--pdf", pdfPath);
+    }
+
+    const result = await runProcess(pythonPath, args, ENGINE_ROOT, GENERATE_TIMEOUT_MS);
 
     if (result.code !== 0) {
       const details = extractEngineError(result.stderr, result.stdout);
       throw new ReportGenerationError(details || "Report generation failed.", 500);
     }
 
-    const buffer = await readFileWhenReady(outputPath);
+    const artifactPath = format === "pdf" ? pdfPath : outputPath;
+    const buffer = await readFileWhenReady(artifactPath);
     if (!buffer.length) {
-      throw new ReportGenerationError("The engine produced an empty document.", 500);
+      throw new ReportGenerationError(
+        format === "pdf"
+          ? "The engine produced an empty PDF."
+          : "The engine produced an empty document.",
+        500
+      );
     }
 
     return {
       buffer,
-      filename: buildDownloadFilename(project.title),
+      filename: buildDownloadFilename(project.title, format),
+      contentType: format === "pdf" ? PDF_CONTENT_TYPE : DOCX_CONTENT_TYPE,
     };
   } finally {
     await fs.rm(workDir, { recursive: true, force: true }).catch(() => undefined);
@@ -275,13 +309,14 @@ export class ReportGenerationError extends Error {
   }
 }
 
-function buildDownloadFilename(title?: string) {
+function buildDownloadFilename(title?: string, format: ReportExportFormat = "docx") {
   const cleaned = (title || "FYP_Report")
     .replace(/[<>:"/\\|?*\u0000-\u001F]/g, "")
     .replace(/\s+/g, "_")
     .replace(/[^\w.-]/g, "")
     .slice(0, 80);
-  return `${cleaned || "FYP_Report"}.docx`;
+  const base = cleaned || "FYP_Report";
+  return format === "pdf" ? `${base}.pdf` : `${base}.docx`;
 }
 
 async function resolvePythonPath() {
