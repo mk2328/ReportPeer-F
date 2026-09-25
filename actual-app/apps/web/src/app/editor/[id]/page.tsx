@@ -276,6 +276,10 @@ export default function EditorPage() {
     const [chapters, setChapters] = useState<StructureItem[]>([]);
     const [activeItem, setActiveItem] = useState<{ id: string, title: string }>({ id: "", title: "Loading..." });
     const [isAiSidebarOpen, setIsAiSidebarOpen] = useState(true);
+    const [aiDraft, setAiDraft] = useState("");
+    const [aiError, setAiError] = useState<string | null>(null);
+    const [isAiGenerating, setIsAiGenerating] = useState(false);
+    const [aiMessage, setAiMessage] = useState("");
     const [isStructureSidebarOpen, setIsStructureSidebarOpen] = useState(true);
     const [contentMap, setContentMap] = useState<Record<string, string>>({});
     const [coverMeta, setCoverMeta] = useState<CoverMeta>(defaultCoverMeta);
@@ -465,6 +469,40 @@ export default function EditorPage() {
         } finally {
             setIsGenerating(false);
             setGeneratingFormat(null);
+        }
+    };
+
+    /** Phase P0: request a draft for the active section; do not insert into the report yet. */
+    const handleAiGenerate = async () => {
+        if (!id || !activeItem.id) {
+            setAiError("Select a report section first.");
+            return;
+        }
+        setIsAiGenerating(true);
+        setAiError(null);
+        try {
+            // Persist latest content so the API reads current section text from Mongo.
+            await persistProject();
+            const response = await fetch(`/api/projects/${id}/ai`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    action: "generate",
+                    sectionId: activeItem.id,
+                    message: aiMessage.trim() || undefined,
+                }),
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(data.error || "Failed to generate AI draft");
+            }
+            setAiDraft(typeof data.draft === "string" ? data.draft : "");
+        } catch (err) {
+            console.error("AI generate failed", err);
+            setAiDraft("");
+            setAiError(err instanceof Error ? err.message : "Failed to generate AI draft");
+        } finally {
+            setIsAiGenerating(false);
         }
     };
 
@@ -2114,18 +2152,74 @@ export default function EditorPage() {
                                 <div className="flex items-center gap-2"><Sparkles className="h-4 w-4" /> Academic AI Copilot</div>
                                 <button type="button" onClick={() => setIsAiSidebarOpen(false)} className="p-1.5 text-slate-400 hover:text-[#6F155F] hover:bg-[#F2EBF1] rounded-md transition-colors"><PanelRightClose className="h-4 w-4" /></button>
                             </div>
-                            <div className="flex-1 p-4 overflow-y-auto bg-[#F8F6F9] space-y-4">
-                                <div className="bg-white p-3.5 rounded-lg border border-slate-200/80 shadow-sm text-xs text-slate-600 leading-relaxed">How can I help you improve your content?</div>
-                                <div className="grid grid-cols-1 gap-2">
-                                    {["Refine Grammar", "Check Academic Tone", "Expand Details"].map((prompt) => (
-                                        <button key={prompt} type="button" className="text-left text-xs bg-white border border-slate-200 hover:border-[#6F155F]/40 hover:text-[#6F155F] p-2.5 rounded-md transition-colors">{prompt}</button>
+                            <div className="flex-1 p-4 overflow-y-auto bg-[#F8F6F9] space-y-3">
+                                <div className="rounded-md border border-slate-200/80 bg-white px-2.5 py-2 text-[11px] text-slate-500">
+                                    Target section:{" "}
+                                    <span className="font-medium text-slate-700">
+                                        {activeItem.title || "Select a heading"}
+                                    </span>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={handleAiGenerate}
+                                    disabled={isAiGenerating || isSaving || !activeItem.id}
+                                    className="w-full text-left text-xs bg-white border border-slate-200 hover:border-[#6F155F]/40 hover:text-[#6F155F] p-2.5 rounded-md transition-colors disabled:opacity-50"
+                                >
+                                    {isAiGenerating ? "Generating…" : "Generate content"}
+                                </button>
+                                <div className="grid grid-cols-1 gap-2 opacity-50 pointer-events-none" title="Coming in a later phase">
+                                    {["Expand Details", "Refine Grammar", "Academic Tone"].map((prompt) => (
+                                        <button key={prompt} type="button" className="text-left text-xs bg-white border border-slate-200 p-2.5 rounded-md">
+                                            {prompt}
+                                        </button>
                                     ))}
                                 </div>
+                                {aiError && (
+                                    <div className="rounded-md border border-red-200 bg-red-50 px-2.5 py-2 text-[11px] text-red-600">
+                                        {aiError}
+                                    </div>
+                                )}
+                                {aiDraft ? (
+                                    <div className="space-y-1.5">
+                                        <div className="text-[10px] uppercase tracking-wider text-slate-400">Draft (not inserted)</div>
+                                        <div className="bg-white p-3 rounded-lg border border-slate-200/80 shadow-sm text-xs text-slate-700 leading-relaxed whitespace-pre-wrap max-h-80 overflow-y-auto">
+                                            {aiDraft}
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className="bg-white p-3.5 rounded-lg border border-slate-200/80 shadow-sm text-xs text-slate-500 leading-relaxed">
+                                        Select a heading, then choose Generate content. The draft appears here — it is not inserted into the report yet.
+                                    </div>
+                                )}
                             </div>
                             <div className="p-3 border-t border-slate-200/80 bg-white">
                                 <div className="relative">
-                                    <input className="w-full text-xs border border-slate-200 rounded-lg p-2.5 pr-9 focus:outline-none focus:ring-1 focus:ring-[#6F155F]/40 focus:border-[#6F155F]/40" placeholder="Ask anything..." />
-                                    <button type="button" className="absolute right-2.5 top-2.5 text-[#6F155F]"><Send className="h-4 w-4" /></button>
+                                    <input
+                                        className="w-full text-xs border border-slate-200 rounded-lg p-2.5 pr-9 focus:outline-none focus:ring-1 focus:ring-[#6F155F]/40 focus:border-[#6F155F]/40"
+                                        placeholder="Optional instruction…"
+                                        value={aiMessage}
+                                        onChange={(e) => setAiMessage(e.target.value)}
+                                        onKeyDown={(e) => {
+                                            if (e.key === "Enter" && !e.shiftKey) {
+                                                e.preventDefault();
+                                                void handleAiGenerate();
+                                            }
+                                        }}
+                                        disabled={isAiGenerating}
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={() => void handleAiGenerate()}
+                                        disabled={isAiGenerating || !activeItem.id}
+                                        className="absolute right-2.5 top-2.5 text-[#6F155F] disabled:opacity-40"
+                                        title="Generate"
+                                    >
+                                        {isAiGenerating ? (
+                                            <Loader2 className="h-4 w-4 animate-spin" />
+                                        ) : (
+                                            <Send className="h-4 w-4" />
+                                        )}
+                                    </button>
                                 </div>
                             </div>
                         </div>
