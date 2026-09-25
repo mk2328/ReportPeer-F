@@ -16,12 +16,23 @@ export type ReportContentList = {
   level?: number;
 };
 
+export type ReportTableCell = {
+  text?: string;
+  background?: string;
+  textColor?: string;
+  bold?: boolean;
+  align?: "left" | "center" | "right";
+  colspan?: number;
+  rowspan?: number;
+  hidden?: boolean;
+};
+
 export type ReportTable = {
   id?: string;
   caption?: string;
-  columns?: string[];
-  data?: string[][];
-  rows?: string[][];
+  columns?: Array<string | ReportTableCell>;
+  data?: Array<Array<string | ReportTableCell>>;
+  rows?: Array<Array<string | ReportTableCell>>;
 };
 
 export type ReportFigure = {
@@ -33,16 +44,35 @@ export type ReportFigure = {
   mimeType?: string;
   dataUrl?: string;
   data?: string;
+  /** Percent of template max figure width (40–100). */
+  widthPercent?: number;
+  align?: "left" | "center" | "right";
 };
+
+export type ReportContentBlock =
+  | { id?: string; type: "paragraph"; text?: string }
+  | {
+      id?: string;
+      type: "list";
+      listType?: "bullet" | "number" | string;
+      type_legacy?: string;
+      items?: Array<string | ReportListItem>;
+    }
+  | (ReportTable & { type: "table" })
+  | (ReportFigure & { type: "figure" });
 
 export type ReportStructureItem = {
   id: string;
   title: string;
   level?: number;
+  /** Hierarchical number (e.g. "1.2.1"); title must not include this prefix. */
+  number?: string;
   subitems?: ReportStructureItem[];
   lists?: ReportContentList[];
   tables?: ReportTable[];
   figures?: ReportFigure[];
+  /** Ordered mixed content; when present, generation follows this order. */
+  blocks?: ReportContentBlock[];
 };
 
 export type ReportTeamMember = {

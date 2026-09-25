@@ -396,32 +396,49 @@ class DocumentBuilder:
             meta.get("supervisor") or meta.get("projectAdvisor") or ""
         ).strip()
         student_tabs = second_cfg.get("student_tabs_inches") or [1.5, 3.5]
+        top_spacer_pt = float(second_cfg.get("top_spacer_pt", 34))
+        after_title_pt = float(second_cfg.get("after_title_pt", 60))
+        after_report_label_pt = float(second_cfg.get("after_report_label_pt", 54))
+        before_advisor_pt = float(second_cfg.get("before_advisor_pt", 30))
+        before_date_pt = float(second_cfg.get("before_date_pt", 90))
+        after_date_pt = float(second_cfg.get("after_date_pt", 90))
 
         title_size = float(title_cfg.get("title_font_size", 26))
         title_lines = self._split_title_lines(project_title, max_lines=2)
+
+        # Page break on an empty paragraph so top spacing is not collapsed by Word.
+        break_para = self.doc.add_paragraph()
+        break_para.paragraph_format.page_break_before = True
+        break_para.paragraph_format.space_before = Pt(0)
+        break_para.paragraph_format.space_after = Pt(0)
+        break_para.paragraph_format.line_spacing = 1.0
+
         for index, line in enumerate(title_lines):
             paragraph = self.doc.add_paragraph()
-            if index == 0:
-                paragraph.paragraph_format.page_break_before = True
             paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            paragraph.paragraph_format.space_before = Pt(0)
+            paragraph.paragraph_format.space_before = Pt(top_spacer_pt if index == 0 else 0)
             paragraph.paragraph_format.space_after = Pt(
-                6 if index < len(title_lines) - 1 else 48
+                6 if index < len(title_lines) - 1 else after_title_pt
             )
             paragraph.paragraph_format.line_spacing = 1.0
             run = paragraph.add_run(line)
             self._apply_run_style(run, size=title_size, bold=False, small_caps=True)
 
-        self._add_centered_line(report_label, size=16, bold=True, space_after=36, line_spacing=1.0)
+        self._add_centered_line(
+            report_label, size=16, bold=True, space_after=after_report_label_pt, line_spacing=1.0
+        )
 
         submitted = self.doc.add_paragraph()
         submitted.alignment = WD_ALIGN_PARAGRAPH.LEFT
         submitted.paragraph_format.space_before = Pt(6)
         submitted.paragraph_format.space_after = Pt(6)
         submitted.paragraph_format.line_spacing = 1.0
+        submitted.paragraph_format.left_indent = Inches(0)
+        submitted.paragraph_format.first_line_indent = Inches(0)
         run = submitted.add_run("Submitted by")
         self._apply_run_style(run, size=13, bold=True)
 
+        # Same deterministic tab stops as the official sample (Name / Enrolment / Seat).
         self._add_student_tab_rows(
             self._normalize_students(meta),
             tab_positions_inches=student_tabs,
@@ -434,7 +451,7 @@ class DocumentBuilder:
         # CRITICAL: Project Advisor: Name on the SAME line.
         advisor_para = self.doc.add_paragraph()
         advisor_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
-        advisor_para.paragraph_format.space_before = Pt(18)
+        advisor_para.paragraph_format.space_before = Pt(before_advisor_pt)
         advisor_para.paragraph_format.space_after = Pt(0)
         advisor_para.paragraph_format.line_spacing = 1.0
         advisor_para.paragraph_format.left_indent = Inches(0)
@@ -445,9 +462,11 @@ class DocumentBuilder:
         self._apply_run_style(name_run, size=13, bold=True)
 
         date_spacer = self.doc.add_paragraph()
-        date_spacer.paragraph_format.space_before = Pt(56)
+        date_spacer.paragraph_format.space_before = Pt(before_date_pt)
         date_spacer.paragraph_format.space_after = Pt(0)
-        self._add_centered_line(submission, size=11, bold=True, space_after=56, line_spacing=1.0)
+        self._add_centered_line(
+            submission, size=11, bold=True, space_after=after_date_pt, line_spacing=1.0
+        )
 
         self._add_centered_line(
             department_line, size=14, bold=True, space_after=2, line_spacing=1.0, small_caps=True
@@ -1018,17 +1037,32 @@ class DocumentBuilder:
         self.force_times_new_roman(page_run)
         page_run.font.size = Pt(10)
 
-    def add_figure(self, image_path, caption):
+    def add_figure(self, image_path, caption, width_percent=None, alignment=None):
         fig_cfg = self.config.get("figures", {})
-        self.doc.add_picture(image_path, width=Inches(fig_cfg.get("width_inches", 5.5)))
+        max_width = float(fig_cfg.get("width_inches", 5.5))
+        try:
+            pct = float(width_percent) if width_percent is not None else 100.0
+        except (TypeError, ValueError):
+            pct = 100.0
+        pct = max(40.0, min(100.0, pct))
+        width = max_width * (pct / 100.0)
+
+        self.doc.add_picture(image_path, width=Inches(width))
 
         img_para = self.doc.paragraphs[-1]
-        img_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        align = str(alignment or fig_cfg.get("alignment") or "center").lower()
+        if align == "left":
+            img_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        elif align == "right":
+            img_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        else:
+            img_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
         img_para.paragraph_format.space_before = Pt(fig_cfg.get("space_before_image", 8))
         img_para.paragraph_format.space_after = Pt(fig_cfg.get("space_after_image", 2))
 
         paragraph = self.doc.add_paragraph()
         formatters.apply_caption_style(self.doc, paragraph)
+        # Caption stays centered per JUW (numbering locked); image align is independent.
         paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
         font_size = Pt(fig_cfg.get("caption_font_size", 12))
 
@@ -1075,7 +1109,28 @@ class DocumentBuilder:
         if len(self.doc.paragraphs) > 0:
             self.doc.add_paragraph()
 
-        table = self.doc.add_table(rows=1, cols=len(columns))
+        # Normalize legacy string cells to dicts.
+        def as_cell(value):
+            if isinstance(value, dict):
+                return value
+            return {"text": str(value or "")}
+
+        header = [as_cell(cell) for cell in (columns or [])]
+        body = [[as_cell(cell) for cell in row] for row in (data or [])]
+        if not header:
+            return None
+
+        # Pad short body rows so merges stay within bounds.
+        col_count = len(header)
+        normalized_body = []
+        for row in body:
+            padded = list(row[:col_count])
+            while len(padded) < col_count:
+                padded.append({"text": ""})
+            normalized_body.append(padded)
+        body = normalized_body
+
+        table = self.doc.add_table(rows=1 + len(body), cols=col_count)
         formatters.center_table(table)
         tbl = table._tbl
         tbl_pr = tbl.tblPr
@@ -1093,28 +1148,87 @@ class DocumentBuilder:
             borders.append(border)
         tbl_pr.append(borders)
 
-        for index, column_name in enumerate(columns):
-            cell = table.rows[0].cells[index]
-            cell.text = column_name
-            paragraph = cell.paragraphs[0]
-            run = paragraph.runs[0]
-            self.force_times_new_roman(run)
-            run.bold = True
-            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        grid = [header] + body
+        for row_index, row_data in enumerate(grid):
+            for col_index, cell_data in enumerate(row_data):
+                if cell_data.get("hidden"):
+                    continue
+                cell = table.cell(row_index, col_index)
+                self._apply_table_cell_content(
+                    cell, cell_data, header=row_index == 0
+                )
 
-        for row_data in data:
-            cells = table.add_row().cells
-            for index, item in enumerate(row_data):
-                cell = cells[index]
-                cell.text = str(item)
-                paragraph = cell.paragraphs[0]
-                run = paragraph.runs[0] if paragraph.runs else paragraph.add_run()
-                self.force_times_new_roman(run)
-                paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        # Apply merges after content so Word keeps the top-left cell text.
+        for row_index, row_data in enumerate(grid):
+            for col_index, cell_data in enumerate(row_data):
+                if cell_data.get("hidden"):
+                    continue
+                colspan = int(cell_data.get("colspan") or 1)
+                rowspan = int(cell_data.get("rowspan") or 1)
+                if colspan <= 1 and rowspan <= 1:
+                    continue
+                end_row = min(row_index + rowspan - 1, len(grid) - 1)
+                end_col = min(col_index + colspan - 1, len(header) - 1)
+                try:
+                    table.cell(row_index, col_index).merge(
+                        table.cell(end_row, end_col)
+                    )
+                except Exception:
+                    pass
 
         if with_caption or caption:
             self.add_table_caption(caption or "")
         return table
+
+    def _apply_table_cell_content(self, cell, cell_data, header=False):
+        text = str(cell_data.get("text") or "")
+        cell.text = text
+        paragraph = cell.paragraphs[0]
+        run = paragraph.runs[0] if paragraph.runs else paragraph.add_run(text)
+        if not paragraph.runs:
+            run = paragraph.add_run(text)
+        self.force_times_new_roman(run)
+
+        bold = cell_data.get("bold")
+        if bold is None:
+            run.bold = True if header else False
+        else:
+            run.bold = bool(bold)
+
+        align = cell_data.get("align")
+        if align == "center":
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        elif align == "right":
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        elif align == "left":
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        else:
+            paragraph.alignment = (
+                WD_ALIGN_PARAGRAPH.CENTER if header else WD_ALIGN_PARAGRAPH.LEFT
+            )
+
+        color = cell_data.get("textColor") or cell_data.get("text_color")
+        if color:
+            hex_color = str(color).lstrip("#")
+            if len(hex_color) == 6:
+                try:
+                    run.font.color.rgb = RGBColor.from_string(hex_color)
+                except Exception:
+                    pass
+
+        background = cell_data.get("background")
+        if background:
+            hex_fill = str(background).lstrip("#")
+            if len(hex_fill) == 6:
+                tc_pr = cell._tc.get_or_add_tcPr()
+                existing = tc_pr.find(qn("w:shd"))
+                if existing is not None:
+                    tc_pr.remove(existing)
+                shd = OxmlElement("w:shd")
+                shd.set(qn("w:val"), "clear")
+                shd.set(qn("w:color"), "auto")
+                shd.set(qn("w:fill"), hex_fill.upper())
+                tc_pr.append(shd)
 
     def _setup_title_cover_section(self):
         """Cover/title page: A4 margins, no page number."""

@@ -1,6 +1,6 @@
 {
   "layout": {
-    "page_size": "Letter",
+    "page_size": "A4",
     "paper_side": "single_side",
     "margins_inches": {
       "top": 1.0,
@@ -12,33 +12,6 @@
       "line_spacing": 1.5,
       "paragraph_before": 0,
       "paragraph_after": 0
-    },
-    "title_page": {
-      "logo_width_inches": 1.24,
-      "logo_height_inches": 1.34,
-      "title_font_size": 26,
-      "report_label": "BS (CS) Final Year Project Report",
-      "department_line": "Department of Computer Science and Software Engineering",
-      "university_line": "Jinnah University for Women",
-      "address_line": "5-C Nazimabad, Karachi 74600",
-      "student_tabs_inches": [2.0, 4.5]
-    },
-    "second_cover": {
-      "student_tabs_inches": [1.5, 3.5],
-      "top_spacer_pt": 22,
-      "after_title_pt": 52,
-      "after_report_label_pt": 48,
-      "before_advisor_pt": 28,
-      "before_date_pt": 88,
-      "after_date_pt": 95
-    },
-    "approval_page": {
-      "logo_width_inches": 0.89,
-      "logo_height_inches": 0.96,
-      "logo_left_inches": 0.84,
-      "student_tabs_inches": [1.44, 3.5],
-      "department_line": "Department of Computer Science and Software Engineering",
-      "university_line": "JINNAH UNIVERSITY FOR WOMEN"
     }
   },
 
@@ -63,26 +36,20 @@
         "all_caps": true,
         "alignment": "left"
       },
-      "JUW_CHAPTER_TITLE": {
+      "JUW_H2": {
         "size": 18,
         "bold": true,
         "all_caps": true,
         "alignment": "left"
       },
-      "JUW_H2": {
+      "JUW_H3": {
         "size": 16,
         "bold": true,
         "small_caps": true,
         "alignment": "left"
       },
-      "JUW_H3": {
-        "size": 14,
-        "bold": true,
-        "small_caps": true,
-        "alignment": "left"
-      },
       "JUW_H4": {
-        "size": 12,
+        "size": 14,
         "bold": true,
         "small_caps": true,
         "alignment": "left"
@@ -132,16 +99,6 @@
   "front_matter": {
     "page_number_style": "roman",
     "items": [
-      {
-        "title": "Main Cover Page",
-        "page": null,
-        "show_page_number": false
-      },
-      {
-        "title": "Second Cover Page",
-        "page": null,
-        "show_page_number": false
-      },
       {
         "title": "Project Approval Form",
         "page": "i",

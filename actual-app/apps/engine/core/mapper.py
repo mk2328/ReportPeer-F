@@ -8,6 +8,8 @@ CHAPTER_TITLE_RE = re.compile(
     re.IGNORECASE,
 )
 CHAPTER_ID_RE = re.compile(r"^ch(\d+)$", re.IGNORECASE)
+# Strip legacy numbers baked into titles (Word multilevel also supplies them).
+HEADING_NUMBER_PREFIX_RE = re.compile(r"^\d+(?:\.\d+)*\.?\s+")
 
 FRONT_MATTER_BY_ID = {
     "approval": "approval",
@@ -167,35 +169,85 @@ def _parse_chapter(item):
 
 def _render_body_item(builder, item, content_map):
     chapter = _parse_chapter(item)
+    blocks = item.get("blocks")
+    has_blocks = isinstance(blocks, list) and len(blocks) > 0
+
     if chapter:
         number, title = chapter
         builder.start_chapter(number, title)
+        if has_blocks:
+            _render_section_body(builder, item, content_map, heading_level=1)
+            for child in item.get("subitems") or []:
+                _render_heading_tree(builder, child, content_map, level=2)
+        else:
+            # Legacy chapter order: body paragraphs, then all subheadings,
+            # then chapter-level lists/tables/figures.
+            builder.add_paragraphs(_content_for(item, content_map), level=1)
+            for child in item.get("subitems") or []:
+                _render_heading_tree(builder, child, content_map, level=2)
+            _render_lists(builder, item.get("lists"), heading_level=1)
+            _render_tables(builder, item.get("tables"))
+            _render_figures(builder, item.get("figures"))
+        return
+
+    builder.start_unnumbered_section(str(item.get("title") or "Section"))
+    if has_blocks:
+        _render_section_body(builder, item, content_map, heading_level=1)
+        for child in item.get("subitems") or []:
+            _render_heading_tree(builder, child, content_map, level=2)
+    else:
         builder.add_paragraphs(_content_for(item, content_map), level=1)
         for child in item.get("subitems") or []:
             _render_heading_tree(builder, child, content_map, level=2)
         _render_lists(builder, item.get("lists"), heading_level=1)
         _render_tables(builder, item.get("tables"))
         _render_figures(builder, item.get("figures"))
-        return
-
-    builder.start_unnumbered_section(str(item.get("title") or "Section"))
-    builder.add_paragraphs(_content_for(item, content_map), level=1)
-    for child in item.get("subitems") or []:
-        _render_heading_tree(builder, child, content_map, level=2)
-    _render_lists(builder, item.get("lists"), heading_level=1)
-    _render_tables(builder, item.get("tables"))
-    _render_figures(builder, item.get("figures"))
 
 
 def _render_heading_tree(builder, item, content_map, level):
     heading_level = min(max(level, 2), 5)
-    builder.add_heading(str(item.get("title") or "Section"), heading_level)
+    # Title only — Word numId 999 renders 1.1 / 1.2.1 once for TOC + body.
+    builder.add_heading(_clean_heading_title(item), heading_level)
+    _render_section_body(builder, item, content_map, heading_level=heading_level)
+    for child in item.get("subitems") or []:
+        _render_heading_tree(builder, child, content_map, heading_level + 1)
+
+
+def _clean_heading_title(item):
+    """Return heading text without a leading outline number."""
+    title = str(item.get("title") or "Section").strip()
+    cleaned = HEADING_NUMBER_PREFIX_RE.sub("", title).strip()
+    return cleaned or title
+
+
+def _render_section_body(builder, item, content_map, heading_level):
+    """Render mixed content in explicit block order when available."""
+    blocks = item.get("blocks")
+    if isinstance(blocks, list) and blocks:
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            block_type = str(block.get("type") or "").strip().lower()
+            if block_type == "paragraph":
+                builder.add_paragraphs(str(block.get("text") or ""), level=heading_level)
+            elif block_type == "list":
+                list_type = block.get("listType") or block.get("kind") or "bullet"
+                _render_lists(
+                    builder,
+                    [{"type": list_type, "items": block.get("items") or []}],
+                    heading_level=heading_level,
+                )
+            elif block_type == "table":
+                _render_tables(builder, [block])
+            elif block_type == "figure":
+                _render_figures(builder, [block])
+        return
+
+    # Legacy path: paragraphs then lists/tables/figures.
     builder.add_paragraphs(_content_for(item, content_map), level=heading_level)
     _render_lists(builder, item.get("lists"), heading_level=heading_level)
     _render_tables(builder, item.get("tables"))
     _render_figures(builder, item.get("figures"))
-    for child in item.get("subitems") or []:
-        _render_heading_tree(builder, child, content_map, heading_level + 1)
 
 
 def _content_for(item, content_map):
@@ -217,13 +269,43 @@ def _render_tables(builder, tables):
         )
 
 
+def _normalize_table_cell(value):
+    """Accept plain strings or rich cell objects from the editor."""
+    if isinstance(value, dict):
+        align = value.get("align")
+        if align not in {"left", "center", "right"}:
+            align = None
+        colspan = int(value.get("colspan") or 1)
+        rowspan = int(value.get("rowspan") or 1)
+        bold = value.get("bold")
+        if bold is None:
+            bold_value = None
+        else:
+            bold_value = bool(bold)
+        return {
+            "text": str(value.get("text") or ""),
+            "background": str(value.get("background") or "").lstrip("#") or None,
+            "textColor": str(value.get("textColor") or value.get("text_color") or "").lstrip("#")
+            or None,
+            "bold": bold_value,
+            "align": align,
+            "colspan": colspan if colspan > 1 else None,
+            "rowspan": rowspan if rowspan > 1 else None,
+            "hidden": bool(value.get("hidden")) or None,
+        }
+    return {"text": str(value or "")}
+
+
 def _normalize_table(table):
-    columns = [str(cell) for cell in (table.get("columns") or [])]
-    data = [[str(cell) for cell in row] for row in (table.get("data") or [])]
+    columns = [_normalize_table_cell(cell) for cell in (table.get("columns") or [])]
+    data = [
+        [_normalize_table_cell(cell) for cell in row]
+        for row in (table.get("data") or [])
+    ]
     rows = table.get("rows")
     if (not columns) and rows:
-        columns = [str(cell) for cell in (rows[0] or [])]
-        data = [[str(cell) for cell in row] for row in rows[1:]]
+        columns = [_normalize_table_cell(cell) for cell in (rows[0] or [])]
+        data = [[_normalize_table_cell(cell) for cell in row] for row in rows[1:]]
     return columns, data
 
 
@@ -267,9 +349,15 @@ def _render_figures(builder, figures):
         path = _resolve_figure_path(figure)
         if not path:
             continue
+        width_percent = figure.get("widthPercent")
+        if width_percent is None:
+            width_percent = figure.get("width_percent")
+        align = figure.get("align") or figure.get("alignment")
         builder.add_figure(
             path,
             _clean_caption(figure.get("caption") or figure.get("title") or "", "figure"),
+            width_percent=width_percent,
+            alignment=align,
         )
 
 

@@ -2,52 +2,40 @@
 
 import { UserButton } from "@clerk/nextjs";
 import Link from "next/link";
-import { useState, useEffect, useRef, type ChangeEvent } from "react";
+import { useState, useEffect, useRef, type ChangeEvent, type KeyboardEvent } from "react";
 import { useParams } from "next/navigation";
 import {
     ChevronLeft, Sparkles, Loader2, ChevronRight, ChevronDown,
-    PanelRightOpen, PanelRightClose, Send, Bot, Plus, FileText, Save, FileDown,
+    PanelRightOpen, PanelRightClose, PanelLeftOpen, PanelLeftClose, Send, Bot, Plus, FileText, Save, FileDown,
     List, ListOrdered, IndentIncrease, IndentDecrease, Trash2,
-    Table2, ImagePlus
+    Table2, ImagePlus, Pencil, Bold, AlignLeft, AlignCenter, AlignRight
 } from "lucide-react";
-
-// --- Types ---
-interface ContentListItem {
-    id: string;
-    text: string;
-    level: number;
-}
-
-interface ContentList {
-    id: string;
-    type: "bullet" | "number";
-    items: ContentListItem[];
-}
-
-interface ContentTable {
-    id: string;
-    caption: string;
-    columns: string[];
-    data: string[][];
-}
-
-interface ContentFigure {
-    id: string;
-    caption: string;
-    fileName: string;
-    mimeType: string;
-    dataUrl: string;
-}
-
-interface StructureItem {
-    id: string;
-    title: string;
-    level: number;
-    subitems?: StructureItem[];
-    lists?: ContentList[];
-    tables?: ContentTable[];
-    figures?: ContentFigure[];
-}
+import {
+    type ContentBlock,
+    type ContentListItem,
+    type ContentTable,
+    type StructureItem,
+    type TableCellAlign,
+    type TableCellData,
+    type TableCellRef,
+    applyBlocksToItem,
+    canMergeTableCells,
+    canUnmergeTableCell,
+    clearTableMerges,
+    deleteStructureItem,
+    ensureContentBlocks,
+    getTableCell,
+    isProtectedStructureId,
+    mergeTableCells,
+    newId,
+    normalizeTableCell,
+    renumberStructure,
+    renameStructureItem,
+    setTableCell,
+    stripHeadingNumber,
+    formatHeadingLabel,
+    unmergeTableCell,
+} from "@/lib/structureUtils";
 
 interface TeamMember {
     name: string;
@@ -139,15 +127,7 @@ function updateStructureItem(
 }
 
 function newListItem(level = 1): ContentListItem {
-    return { id: `li-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, text: "", level };
-}
-
-function newList(type: "bullet" | "number"): ContentList {
-    return { id: `list-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, type, items: [newListItem(1)] };
-}
-
-function newId(prefix: string) {
-    return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    return { id: newId("li"), text: "", level };
 }
 
 function emptyRow(count: number) {
@@ -161,6 +141,13 @@ function newTable(rows = 3, cols = 3): ContentTable {
         columns: Array.from({ length: cols }, (_, index) => `Column ${index + 1}`),
         data: Array.from({ length: Math.max(rows - 1, 1) }, () => emptyRow(cols)),
     };
+}
+
+/** Keep paragraph textareas the height of their text so they read as document flow. */
+function autoGrowTextarea(el: HTMLTextAreaElement | null) {
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
 }
 
 function listNumberLabels(items: ContentListItem[]): string[] {
@@ -183,16 +170,21 @@ const SidebarItem = ({
     level = 0,
     activeItem,
     setActiveItem,
-    onAddSubItem
+    onAddSubItem,
+    onRenameItem,
+    onDeleteItem,
 }: {
     item: StructureItem,
     level?: number,
     activeItem: { id: string, title: string },
     setActiveItem: (item: { id: string, title: string }) => void,
-    onAddSubItem: (id: string, currentLevel: number) => void
+    onAddSubItem: (id: string, parentLevel: number) => void,
+    onRenameItem: (id: string) => void,
+    onDeleteItem: (id: string) => void,
 }) => {
     const [isExpanded, setIsExpanded] = useState(true);
     const hasChildren = item.subitems && item.subitems.length > 0;
+    const protectedItem = isProtectedStructureId(item.id);
 
     return (
         <div>
@@ -200,21 +192,47 @@ const SidebarItem = ({
                 <button
                     onClick={() => {
                         if (hasChildren) setIsExpanded(!isExpanded);
-                        setActiveItem({ id: item.id, title: item.title });
+                        setActiveItem({ id: item.id, title: formatHeadingLabel(item) });
                     }}
-                    className={`flex-1 text-left px-2 py-1 text-[11px] rounded flex items-center gap-1 
-                    ${activeItem.id === item.id ? 'bg-[#F2EBF1] text-[#6F155F]' : 'text-slate-600 hover:bg-slate-50'}`}
+                    className={`flex-1 text-left px-2 py-1.5 text-[11px] rounded-md flex items-center gap-1 min-w-0 transition-colors
+                    ${activeItem.id === item.id ? "bg-[#F2EBF1] text-[#6F155F] font-medium border-l-2 border-[#6F155F]" : "text-slate-600 hover:bg-slate-50 border-l-2 border-transparent"}`}
                 >
-                    <div className="w-3 flex items-center justify-center">
+                    <div className="w-3 flex items-center justify-center shrink-0">
                         {hasChildren && (isExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />)}
                     </div>
-                    <FileText className="h-3 w-3" />
-                    {item.title}
+                    <FileText className="h-3 w-3 shrink-0" />
+                    <span className="truncate">{formatHeadingLabel(item)}</span>
                 </button>
                 <button
+                    type="button"
+                    title="Rename"
                     onClick={(e) => {
                         e.stopPropagation();
-                        onAddSubItem(item.id, level);
+                        onRenameItem(item.id);
+                    }}
+                    className="opacity-0 group-hover:opacity-100 p-1 hover:bg-[#F2EBF1] rounded text-[#6F155F]"
+                >
+                    <Pencil className="h-3 w-3" />
+                </button>
+                {!protectedItem && (
+                    <button
+                        type="button"
+                        title="Delete"
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            onDeleteItem(item.id);
+                        }}
+                        className="opacity-0 group-hover:opacity-100 p-1 hover:bg-red-50 rounded text-red-500"
+                    >
+                        <Trash2 className="h-3 w-3" />
+                    </button>
+                )}
+                <button
+                    type="button"
+                    title="Add subheading"
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        onAddSubItem(item.id, item.level || level + 1);
                     }}
                     className="opacity-0 group-hover:opacity-100 p-1 hover:bg-[#F2EBF1] rounded text-[#6F155F]"
                 >
@@ -230,6 +248,8 @@ const SidebarItem = ({
                     activeItem={activeItem}
                     setActiveItem={setActiveItem}
                     onAddSubItem={onAddSubItem}
+                    onRenameItem={onRenameItem}
+                    onDeleteItem={onDeleteItem}
                 />
             ))}
         </div>
@@ -243,13 +263,20 @@ export default function EditorPage() {
     const [chapters, setChapters] = useState<StructureItem[]>([]);
     const [activeItem, setActiveItem] = useState<{ id: string, title: string }>({ id: "", title: "Loading..." });
     const [isAiSidebarOpen, setIsAiSidebarOpen] = useState(true);
+    const [isStructureSidebarOpen, setIsStructureSidebarOpen] = useState(true);
     const [contentMap, setContentMap] = useState<Record<string, string>>({});
     const [coverMeta, setCoverMeta] = useState<CoverMeta>(defaultCoverMeta);
     const [showCoverMeta, setShowCoverMeta] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
     const [isSaving, setIsSaving] = useState(false);
     const [isGenerating, setIsGenerating] = useState(false);
+    const [activeBlockId, setActiveBlockId] = useState<string | null>(null);
+    const [pendingFocusId, setPendingFocusId] = useState<string | null>(null);
+    const [selectedTableCells, setSelectedTableCells] = useState<TableCellRef[]>([]);
+    const [tableSelectionAnchor, setTableSelectionAnchor] = useState<TableCellRef | null>(null);
     const imageInputRef = useRef<HTMLInputElement>(null);
+    const replaceFigureInputRef = useRef<HTMLInputElement>(null);
+    const [replacingFigureId, setReplacingFigureId] = useState<string | null>(null);
 
     // --- 1. Load Data ---
     useEffect(() => {
@@ -259,7 +286,8 @@ export default function EditorPage() {
                 const res = await fetch(`/api/projects/${id}`);
                 if (!res.ok) throw new Error("Failed to fetch");
                 const data = await res.json();
-                setChapters(data.structure || []);
+                const numbered = renumberStructure(data.structure || []);
+                setChapters(numbered);
                 setContentMap(data.contentMap || {});
                 setCoverMeta({
                     ...defaultCoverMeta(),
@@ -291,8 +319,11 @@ export default function EditorPage() {
                         }
                         : null,
                 });
-                if (data.structure?.length > 0) {
-                    setActiveItem({ id: data.structure[0].id, title: data.structure[0].title });
+                if (numbered.length > 0) {
+                    setActiveItem({
+                        id: numbered[0].id,
+                        title: formatHeadingLabel(numbered[0]),
+                    });
                 }
             } catch (err) {
                 console.error("Error loading project:", err);
@@ -302,6 +333,35 @@ export default function EditorPage() {
         };
         fetchData();
     }, [id]);
+
+    useEffect(() => {
+        const item = findStructureItem(chapters, activeItem.id);
+        const blocks = item ? ensureContentBlocks(item, contentMap) : [];
+        setActiveBlockId(blocks[0]?.id ?? null);
+        setSelectedTableCells([]);
+        setTableSelectionAnchor(null);
+        // Reset insert focus when switching sections.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeItem.id]);
+
+    useEffect(() => {
+        if (!pendingFocusId) return;
+        const el = document.querySelector(
+            `[data-focus-id="${pendingFocusId}"]`
+        ) as HTMLInputElement | HTMLTextAreaElement | null;
+        if (el) {
+            el.focus();
+            if ("setSelectionRange" in el && typeof el.value === "string") {
+                const len = el.value.length;
+                try {
+                    el.setSelectionRange(len, len);
+                } catch {
+                    /* ignore */
+                }
+            }
+            setPendingFocusId(null);
+        }
+    }, [pendingFocusId, chapters, contentMap]);
 
     // --- 2. Save Logic ---
     const persistProject = async () => {
@@ -381,23 +441,50 @@ export default function EditorPage() {
     };
 
 
-    // --- 3. Sidebar Add Logic ---
+    // --- 3. Sidebar structure: add / rename / delete ---
+    const persistStructure = async (
+        updatedChapters: StructureItem[],
+        nextContentMap: Record<string, string>
+    ) => {
+        setChapters(updatedChapters);
+        setContentMap(nextContentMap);
+        setIsSaving(true);
+        try {
+            const response = await fetch(`/api/projects/${id}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    contentMap: nextContentMap,
+                    structure: updatedChapters,
+                }),
+            });
+            if (!response.ok) throw new Error("Failed to save to DB");
+        } catch (err) {
+            console.error("Save failed", err);
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
     const handleAddSubItem = async (parentId: string, parentLevel: number) => {
-        const title = prompt("Enter new section title:");
+        const title = prompt("Enter new section title (number is assigned automatically):");
         if (!title) return;
+        const baseTitle = stripHeadingNumber(title) || title.trim();
+        if (!baseTitle) return;
 
         const newItem: StructureItem = {
-            id: Date.now().toString(),
-            title,
+            id: newId("sec"),
+            title: baseTitle,
             level: parentLevel + 1,
             subitems: [],
             lists: [],
             tables: [],
-            figures: []
+            figures: [],
+            blocks: [{ id: newId("p"), type: "paragraph", text: "" }],
         };
 
-        const addItemRecursive = (items: StructureItem[]): StructureItem[] => {
-            return items.map(item => {
+        const addItemRecursive = (items: StructureItem[]): StructureItem[] =>
+            items.map((item) => {
                 if (item.id === parentId) {
                     return { ...item, subitems: [...(item.subitems || []), newItem] };
                 }
@@ -406,94 +493,211 @@ export default function EditorPage() {
                 }
                 return item;
             });
-        };
 
-        // 1. Local State Update
-        const updatedChapters = addItemRecursive(chapters);
-        setChapters(updatedChapters);
+        const updatedChapters = renumberStructure(addItemRecursive(chapters));
+        const numberedNew = findStructureItem(updatedChapters, newItem.id);
+        await persistStructure(updatedChapters, { ...contentMap, [newItem.id]: "" });
+        if (numberedNew) {
+            setActiveItem({ id: numberedNew.id, title: formatHeadingLabel(numberedNew) });
+        }
+    };
 
-        // 2. Database Sync (Call PATCH route)
-        setIsSaving(true);
-        try {
-            const response = await fetch(`/api/projects/${id}`, {
-                method: "PATCH",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    contentMap: { ...contentMap, [newItem.id]: "" }, // Naya entry contentMap mein bhi daalein
-                    structure: updatedChapters
-                }),
-            });
+    const handleRenameItem = async (itemId: string) => {
+        const current = findStructureItem(chapters, itemId);
+        if (!current) return;
+        const next = prompt(
+            "Rename heading:",
+            stripHeadingNumber(current.title) || current.title
+        );
+        if (next === null) return;
+        const trimmed = next.trim();
+        if (!trimmed) return;
+        const updatedChapters = renameStructureItem(chapters, itemId, trimmed);
+        const renamed = findStructureItem(updatedChapters, itemId);
+        await persistStructure(updatedChapters, contentMap);
+        if (renamed && activeItem.id === itemId) {
+            setActiveItem({ id: renamed.id, title: formatHeadingLabel(renamed) });
+        }
+    };
 
-            if (!response.ok) throw new Error("Failed to save to DB");
-            console.log("Structure persisted in MongoDB");
-        } catch (err) {
-            console.error("Save failed", err);
-        } finally {
-            setIsSaving(false);
+    const handleDeleteItem = async (itemId: string) => {
+        if (isProtectedStructureId(itemId)) {
+            alert("This required section cannot be deleted.");
+            return;
+        }
+        const current = findStructureItem(chapters, itemId);
+        if (!current) return;
+        if (!confirm(`Delete "${current.title}" and its subheadings/content?`)) return;
+
+        const { items: updatedChapters, removedIds } = deleteStructureItem(chapters, itemId);
+        const nextContentMap = { ...contentMap };
+        for (const removedId of removedIds) {
+            delete nextContentMap[removedId];
+        }
+        await persistStructure(updatedChapters, nextContentMap);
+        if (removedIds.includes(activeItem.id)) {
+            const fallback = updatedChapters[0];
+            setActiveItem(
+                fallback
+                    ? { id: fallback.id, title: formatHeadingLabel(fallback) }
+                    : { id: "", title: "Select a section" }
+            );
+        } else {
+            const stillActive = findStructureItem(updatedChapters, activeItem.id);
+            if (stillActive) {
+                setActiveItem({ id: stillActive.id, title: formatHeadingLabel(stillActive) });
+            }
         }
     };
 
     const activeItemData = findStructureItem(chapters, activeItem.id);
-    const activeLists = activeItemData?.lists || [];
-    const activeTables = activeItemData?.tables || [];
-    const activeFigures = activeItemData?.figures || [];
+    const activeBlocks: ContentBlock[] = activeItemData
+        ? ensureContentBlocks(activeItemData, contentMap)
+        : [];
 
-    const updateActiveLists = (lists: ContentList[]) => {
-        setChapters((prev) =>
-            updateStructureItem(prev, activeItem.id, (item) => ({ ...item, lists }))
+    const commitBlocks = (blocks: ContentBlock[]) => {
+        if (!activeItemData) return;
+        const { item, contentText } = applyBlocksToItem(activeItemData, blocks);
+        setChapters((prev) => updateStructureItem(prev, activeItem.id, () => item));
+        setContentMap((prev) => ({ ...prev, [activeItem.id]: contentText }));
+    };
+
+    const insertBlockAfter = (block: ContentBlock, afterId?: string | null) => {
+        const blocks = [...activeBlocks];
+        const anchor = afterId || activeBlockId;
+        let index = anchor ? blocks.findIndex((entry) => entry.id === anchor) : -1;
+        if (index < 0) index = blocks.length - 1;
+        blocks.splice(index + 1, 0, block);
+        commitBlocks(blocks);
+        setActiveBlockId(block.id);
+    };
+
+    const updateBlock = (blockId: string, updater: (block: ContentBlock) => ContentBlock) => {
+        commitBlocks(
+            activeBlocks.map((block) => (block.id === blockId ? updater(block) : block))
         );
+    };
+
+    const removeBlock = (blockId: string) => {
+        const next = activeBlocks.filter((block) => block.id !== blockId);
+        if (next.length === 0) {
+            next.push({ id: newId("p"), type: "paragraph", text: "" });
+        }
+        commitBlocks(next);
+        if (activeBlockId === blockId) {
+            setActiveBlockId(next[0]?.id ?? null);
+        }
+        setSelectedTableCells([]);
+        setTableSelectionAnchor(null);
     };
 
     const startOrExtendList = (type: "bullet" | "number") => {
-        const lists = [...activeLists];
-        const last = lists[lists.length - 1];
-        if (last && last.type === type) {
-            lists[lists.length - 1] = { ...last, items: [...last.items, newListItem(1)] };
-        } else {
-            lists.push(newList(type));
+        const anchor = activeBlockId
+            ? activeBlocks.find((block) => block.id === activeBlockId)
+            : null;
+        if (anchor?.type === "list" && anchor.listType === type) {
+            const nextItem = newListItem(1);
+            updateBlock(anchor.id, (block) => {
+                if (block.type !== "list") return block;
+                return { ...block, items: [...block.items, nextItem] };
+            });
+            setPendingFocusId(nextItem.id);
+            return;
         }
-        updateActiveLists(lists);
+        const firstItem = newListItem(1);
+        const listId = newId("list");
+        insertBlockAfter({
+            id: listId,
+            type: "list",
+            listType: type,
+            items: [firstItem],
+        });
+        setPendingFocusId(firstItem.id);
     };
 
     const updateListItem = (listId: string, itemId: string, patch: Partial<ContentListItem>) => {
-        updateActiveLists(
-            activeLists.map((list) =>
-                list.id !== listId
-                    ? list
-                    : {
-                        ...list,
-                        items: list.items.map((item) => (item.id === itemId ? { ...item, ...patch } : item)),
-                    }
-            )
-        );
+        updateBlock(listId, (block) => {
+            if (block.type !== "list") return block;
+            return {
+                ...block,
+                items: block.items.map((item) => (item.id === itemId ? { ...item, ...patch } : item)),
+            };
+        });
+    };
+
+    const exitListAtItem = (listId: string, itemIndex: number) => {
+        const block = activeBlocks.find((entry) => entry.id === listId);
+        if (!block || block.type !== "list") return;
+
+        const remaining = block.items.filter((_, index) => index !== itemIndex);
+        const paragraph = { id: newId("p"), type: "paragraph" as const, text: "" };
+        const blocks = [...activeBlocks];
+        const listIndex = blocks.findIndex((entry) => entry.id === listId);
+        if (listIndex < 0) return;
+
+        if (remaining.length === 0) {
+            blocks.splice(listIndex, 1, paragraph);
+        } else {
+            blocks[listIndex] = { ...block, items: remaining };
+            blocks.splice(listIndex + 1, 0, paragraph);
+        }
+        commitBlocks(blocks);
+        setActiveBlockId(paragraph.id);
+        setPendingFocusId(paragraph.id);
+    };
+
+    const handleListItemKeyDown = (
+        e: KeyboardEvent<HTMLInputElement>,
+        listId: string,
+        itemIndex: number,
+        item: ContentListItem
+    ) => {
+        if (e.key !== "Enter") return;
+        e.preventDefault();
+
+        // Empty bullet + Enter → leave the list and continue with a paragraph.
+        if (!item.text.trim()) {
+            exitListAtItem(listId, itemIndex);
+            return;
+        }
+
+        const nextItem = newListItem(item.level);
+        updateBlock(listId, (current) => {
+            if (current.type !== "list") return current;
+            return {
+                ...current,
+                items: [
+                    ...current.items.slice(0, itemIndex + 1),
+                    nextItem,
+                    ...current.items.slice(itemIndex + 1),
+                ],
+            };
+        });
+        setActiveBlockId(listId);
+        setPendingFocusId(nextItem.id);
     };
 
     const changeListLevel = (listId: string, itemIndex: number, delta: number) => {
-        const list = activeLists.find((entry) => entry.id === listId);
-        if (!list) return;
-        const item = list.items[itemIndex];
+        const block = activeBlocks.find((entry) => entry.id === listId);
+        if (!block || block.type !== "list") return;
+        const item = block.items[itemIndex];
         if (!item) return;
-        const previousLevel = itemIndex === 0 ? 1 : list.items[itemIndex - 1].level;
+        const previousLevel = itemIndex === 0 ? 1 : block.items[itemIndex - 1].level;
         const nextLevel = Math.max(1, Math.min(MAX_LIST_LEVEL, item.level + delta));
         const clamped = itemIndex === 0 ? 1 : Math.min(nextLevel, previousLevel + 1);
         updateListItem(listId, item.id, { level: clamped });
     };
 
     const removeListItem = (listId: string, itemId: string) => {
-        updateActiveLists(
-            activeLists
-                .map((list) =>
-                    list.id !== listId
-                        ? list
-                        : { ...list, items: list.items.filter((item) => item.id !== itemId) }
-                )
-                .filter((list) => list.items.length > 0)
-        );
-    };
-
-    const patchActiveItem = (patch: Partial<StructureItem>) => {
-        setChapters((prev) =>
-            updateStructureItem(prev, activeItem.id, (item) => ({ ...item, ...patch }))
+        const block = activeBlocks.find((entry) => entry.id === listId);
+        if (!block || block.type !== "list") return;
+        const items = block.items.filter((item) => item.id !== itemId);
+        if (items.length === 0) {
+            removeBlock(listId);
+            return;
+        }
+        updateBlock(listId, (current) =>
+            current.type === "list" ? { ...current, items } : current
         );
     };
 
@@ -504,49 +708,165 @@ export default function EditorPage() {
         if (rowsRaw === null) return;
         const cols = Math.max(1, Math.min(12, parseInt(colsRaw, 10) || 3));
         const rows = Math.max(2, Math.min(30, parseInt(rowsRaw, 10) || 3));
-        patchActiveItem({ tables: [...activeTables, newTable(rows, cols)] });
-    };
-
-    const updateTable = (tableId: string, updater: (table: ContentTable) => ContentTable) => {
-        patchActiveItem({
-            tables: activeTables.map((table) => (table.id === tableId ? updater(table) : table)),
+        const table = newTable(rows, cols);
+        insertBlockAfter({
+            id: table.id,
+            type: "table",
+            caption: table.caption,
+            columns: table.columns,
+            data: table.data,
         });
     };
 
-    const removeTable = (tableId: string) => {
-        patchActiveItem({ tables: activeTables.filter((table) => table.id !== tableId) });
+    const updateTableBlock = (tableId: string, updater: (table: Extract<ContentBlock, { type: "table" }>) => Extract<ContentBlock, { type: "table" }>) => {
+        updateBlock(tableId, (block) => {
+            if (block.type !== "table") return block;
+            return updater(block);
+        });
     };
 
-    const addTableRow = (table: ContentTable) => {
-        updateTable(table.id, (current) => ({
+    const selectTableCell = (
+        tableId: string,
+        ref: TableCellRef,
+        event: { shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean }
+    ) => {
+        setActiveBlockId(tableId);
+        if (event.shiftKey && tableSelectionAnchor) {
+            const minRow = Math.min(tableSelectionAnchor.row, ref.row);
+            const maxRow = Math.max(tableSelectionAnchor.row, ref.row);
+            const minCol = Math.min(tableSelectionAnchor.col, ref.col);
+            const maxCol = Math.max(tableSelectionAnchor.col, ref.col);
+            // Header/body mixes are not mergeable; keep selection within one region.
+            const headerOnly = maxRow < 0;
+            const bodyOnly = minRow >= 0;
+            if (!headerOnly && !bodyOnly) {
+                setSelectedTableCells([ref]);
+                setTableSelectionAnchor(ref);
+                return;
+            }
+            const next: TableCellRef[] = [];
+            for (let row = minRow; row <= maxRow; row += 1) {
+                for (let col = minCol; col <= maxCol; col += 1) {
+                    next.push({ row, col });
+                }
+            }
+            setSelectedTableCells(next);
+            return;
+        }
+        if (event.metaKey || event.ctrlKey) {
+            setSelectedTableCells((current) => {
+                const exists = current.some((cell) => cell.row === ref.row && cell.col === ref.col);
+                if (exists) {
+                    return current.filter((cell) => !(cell.row === ref.row && cell.col === ref.col));
+                }
+                return [...current, ref];
+            });
+            setTableSelectionAnchor(ref);
+            return;
+        }
+        setSelectedTableCells([ref]);
+        setTableSelectionAnchor(ref);
+    };
+
+    const applyFormatToSelectedCells = (
+        table: Extract<ContentBlock, { type: "table" }>,
+        patch: Partial<TableCellData>
+    ) => {
+        if (!selectedTableCells.length) return;
+        updateTableBlock(table.id, (current) => {
+            let next = current;
+            for (const ref of selectedTableCells) {
+                const existing = getTableCell(next, ref);
+                if (existing.hidden) continue;
+                next = setTableCell(next, ref, { ...existing, ...patch });
+            }
+            return next;
+        });
+    };
+
+    const toggleBoldSelected = (table: Extract<ContentBlock, { type: "table" }>) => {
+        if (!selectedTableCells.length) return;
+        const first = selectedTableCells.find((ref) => !getTableCell(table, ref).hidden);
+        if (!first) return;
+        const nextBold = !Boolean(getTableCell(table, first).bold);
+        applyFormatToSelectedCells(table, { bold: nextBold });
+    };
+
+    const setAlignSelected = (table: Extract<ContentBlock, { type: "table" }>, align: TableCellAlign) => {
+        applyFormatToSelectedCells(table, { align });
+    };
+
+    const mergeSelectedCells = (table: Extract<ContentBlock, { type: "table" }>) => {
+        const merged = mergeTableCells(table, selectedTableCells);
+        if (!merged) return;
+        updateTableBlock(table.id, (current) => ({
             ...current,
-            data: [...current.data, emptyRow(current.columns.length)],
+            columns: merged.columns,
+            data: merged.data,
+        }));
+        const rows = selectedTableCells.map((ref) => ref.row);
+        const cols = selectedTableCells.map((ref) => ref.col);
+        const anchor = { row: Math.min(...rows), col: Math.min(...cols) };
+        setSelectedTableCells([anchor]);
+        setTableSelectionAnchor(anchor);
+    };
+
+    const unmergeSelectedCell = (table: Extract<ContentBlock, { type: "table" }>) => {
+        const target =
+            selectedTableCells.find((ref) => canUnmergeTableCell(table, ref)) ||
+            selectedTableCells[0];
+        if (!target) return;
+        const next = unmergeTableCell(table, target);
+        if (!next) return;
+        updateTableBlock(table.id, (current) => ({
+            ...current,
+            columns: next.columns,
+            data: next.data,
         }));
     };
 
-    const addTableColumn = (table: ContentTable) => {
-        updateTable(table.id, (current) => ({
-            ...current,
-            columns: [...current.columns, `Column ${current.columns.length + 1}`],
-            data: current.data.map((row) => [...row, ""]),
-        }));
+    const addTableRow = (table: Extract<ContentBlock, { type: "table" }>) => {
+        updateTableBlock(table.id, (current) =>
+            clearTableMerges({
+                ...current,
+                data: [...current.data, emptyRow(current.columns.length)],
+            })
+        );
+        setSelectedTableCells([]);
     };
 
-    const removeTableRow = (table: ContentTable, rowIndex: number) => {
+    const addTableColumn = (table: Extract<ContentBlock, { type: "table" }>) => {
+        updateTableBlock(table.id, (current) =>
+            clearTableMerges({
+                ...current,
+                columns: [...current.columns, `Column ${current.columns.length + 1}`],
+                data: current.data.map((row) => [...row, ""]),
+            })
+        );
+        setSelectedTableCells([]);
+    };
+
+    const removeTableRow = (table: Extract<ContentBlock, { type: "table" }>, rowIndex: number) => {
         if (table.data.length <= 1) return;
-        updateTable(table.id, (current) => ({
-            ...current,
-            data: current.data.filter((_, index) => index !== rowIndex),
-        }));
+        updateTableBlock(table.id, (current) =>
+            clearTableMerges({
+                ...current,
+                data: current.data.filter((_, index) => index !== rowIndex),
+            })
+        );
+        setSelectedTableCells([]);
     };
 
-    const removeTableColumn = (table: ContentTable, colIndex: number) => {
+    const removeTableColumn = (table: Extract<ContentBlock, { type: "table" }>, colIndex: number) => {
         if (table.columns.length <= 1) return;
-        updateTable(table.id, (current) => ({
-            ...current,
-            columns: current.columns.filter((_, index) => index !== colIndex),
-            data: current.data.map((row) => row.filter((_, index) => index !== colIndex)),
-        }));
+        updateTableBlock(table.id, (current) =>
+            clearTableMerges({
+                ...current,
+                columns: current.columns.filter((_, index) => index !== colIndex),
+                data: current.data.map((row) => row.filter((_, index) => index !== colIndex)),
+            })
+        );
+        setSelectedTableCells([]);
     };
 
     const handleImageUpload = (event: ChangeEvent<HTMLInputElement>) => {
@@ -557,71 +877,94 @@ export default function EditorPage() {
         reader.onload = () => {
             const dataUrl = typeof reader.result === "string" ? reader.result : "";
             if (!dataUrl) return;
-            patchActiveItem({
-                figures: [
-                    ...activeFigures,
-                    {
-                        id: newId("fig"),
-                        caption: "",
-                        fileName: file.name,
-                        mimeType: file.type || "image/png",
-                        dataUrl,
-                    },
-                ],
+            insertBlockAfter({
+                id: newId("fig"),
+                type: "figure",
+                caption: "",
+                fileName: file.name,
+                mimeType: file.type || "image/png",
+                dataUrl,
+                widthPercent: 100,
+                align: "center",
             });
         };
         reader.readAsDataURL(file);
     };
 
-    const updateFigure = (figureId: string, patch: Partial<ContentFigure>) => {
-        patchActiveItem({
-            figures: activeFigures.map((figure) =>
-                figure.id === figureId ? { ...figure, ...patch } : figure
-            ),
-        });
+    const handleReplaceFigure = (event: ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+        const figureId = replacingFigureId;
+        event.target.value = "";
+        setReplacingFigureId(null);
+        if (!file || !figureId) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+            const dataUrl = typeof reader.result === "string" ? reader.result : "";
+            if (!dataUrl) return;
+            updateBlock(figureId, (current) =>
+                current.type === "figure"
+                    ? {
+                          ...current,
+                          dataUrl,
+                          fileName: file.name,
+                          mimeType: file.type || "image/png",
+                      }
+                    : current
+            );
+        };
+        reader.readAsDataURL(file);
     };
 
-    const removeFigure = (figureId: string) => {
-        patchActiveItem({ figures: activeFigures.filter((figure) => figure.id !== figureId) });
+    const updateFigureBlock = (
+        figureId: string,
+        patch: Partial<Extract<ContentBlock, { type: "figure" }>>
+    ) => {
+        updateBlock(figureId, (current) =>
+            current.type === "figure" ? { ...current, ...patch } : current
+        );
+    };
+
+    const addParagraphBlock = () => {
+        insertBlockAfter({ id: newId("p"), type: "paragraph", text: "" });
     };
 
     if (isLoading) return <div className="h-screen flex items-center justify-center"><Loader2 className="animate-spin h-8 w-8 text-[#6F155F]" /></div>;
 
     return (
-        <div className="h-screen flex flex-col bg-background overflow-hidden">
-            <header className="h-14 border-b border-gray-100 bg-white px-4 flex items-center justify-between shrink-0">
-                <div className="flex items-center gap-4">
-                    <Link href="/dashboard" className="text-gray-400 hover:text-[#6F155F]"><ChevronLeft className="h-5 w-5" /></Link>
-                    <h1 className="text-sm font-medium text-slate-800">Editor</h1>
-                </div>
+        <div className="h-screen flex flex-col bg-[#F4F2F5] overflow-hidden">
+            <header className="h-14 border-b border-slate-200/80 bg-white px-4 flex items-center justify-between shrink-0 shadow-[0_1px_0_rgba(15,23,42,0.03)]">
                 <div className="flex items-center gap-3">
+                    <Link href="/dashboard" className="text-slate-400 hover:text-[#6F155F] transition-colors"><ChevronLeft className="h-5 w-5" /></Link>
+                    <h1 className="text-sm font-semibold tracking-tight text-slate-800">Editor</h1>
+                </div>
+                <div className="flex items-center gap-2.5">
                     <button
                         onClick={() => setShowCoverMeta((open) => !open)}
-                        className="text-xs flex items-center gap-1 text-slate-500 hover:text-[#6F155F]"
+                        className="text-xs flex items-center gap-1.5 text-slate-500 hover:text-[#6F155F] px-2 py-1.5 rounded-md hover:bg-slate-50 transition-colors"
                         type="button"
                     >
-                        <FileText className="h-3 w-3" />
+                        <FileText className="h-3.5 w-3.5" />
                         {showCoverMeta ? "Hide Cover Details" : "Title & Approval"}
                     </button>
                     <button
                         onClick={handleSave}
                         disabled={isSaving || isGenerating}
-                        className="text-xs flex items-center gap-1 text-slate-500 hover:text-[#6F155F] disabled:opacity-50"
+                        className="text-xs flex items-center gap-1.5 text-slate-500 hover:text-[#6F155F] px-2 py-1.5 rounded-md hover:bg-slate-50 transition-colors disabled:opacity-50"
                     >
-                        {isSaving ? "Saving..." : <><Save className="h-3 w-3" /> Save</>}
+                        {isSaving ? "Saving..." : <><Save className="h-3.5 w-3.5" /> Save</>}
                     </button>
                     <button
                         onClick={handleGenerate}
                         disabled={isSaving || isGenerating}
-                        className="text-xs flex items-center gap-1.5 rounded-md bg-[#6F155F] hover:bg-[#57104b] text-white px-3 py-1.5 font-medium disabled:opacity-50"
+                        className="text-xs flex items-center gap-1.5 rounded-lg bg-[#6F155F] hover:bg-[#57104b] text-white px-3.5 py-1.5 font-medium shadow-sm disabled:opacity-50 transition-colors"
                     >
                         {isGenerating ? (
-                            <><Loader2 className="h-3 w-3 animate-spin" /> Generating...</>
+                            <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Generating...</>
                         ) : (
-                            <><FileDown className="h-3 w-3" /> Generate Report</>
+                            <><FileDown className="h-3.5 w-3.5" /> Generate Report</>
                         )}
                     </button>
-                    <button onClick={() => setIsAiSidebarOpen(!isAiSidebarOpen)} className="p-2 text-slate-600 hover:bg-slate-100 rounded-lg transition-all">
+                    <button onClick={() => setIsAiSidebarOpen(!isAiSidebarOpen)} className="p-2 text-slate-500 hover:text-[#6F155F] hover:bg-slate-50 rounded-lg transition-colors" title={isAiSidebarOpen ? "Collapse AI" : "Expand AI"}>
                         {isAiSidebarOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
                     </button>
                     <UserButton />
@@ -629,24 +972,50 @@ export default function EditorPage() {
             </header>
 
             <div className="flex-1 flex min-h-0 overflow-hidden">
-                <aside className="w-64 border-r border-gray-100 bg-white overflow-y-auto pt-2">
-                    <div className="px-4 mb-2 text-[10px] font-bold uppercase tracking-wider text-gray-400">Report Structure</div>
-                    {chapters.map(ch => (
-                        <SidebarItem
-                            key={ch.id}
-                            item={ch}
-                            level={ch.level || 1}
-                            activeItem={activeItem}
-                            setActiveItem={setActiveItem}
-                            onAddSubItem={handleAddSubItem}
-                        />
-                    ))}
+                <aside className={`${isStructureSidebarOpen ? "w-64" : "w-12"} border-r border-slate-200/80 bg-white transition-all duration-300 shrink-0 overflow-hidden flex flex-col`}>
+                    {isStructureSidebarOpen ? (
+                        <div className="flex-1 overflow-y-auto pt-3 min-w-[16rem]">
+                            <div className="px-3 mb-3 flex items-center justify-between gap-2">
+                                <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-slate-400">Report Structure</div>
+                                <button
+                                    type="button"
+                                    title="Collapse structure"
+                                    onClick={() => setIsStructureSidebarOpen(false)}
+                                    className="p-1.5 text-slate-400 hover:text-[#6F155F] hover:bg-[#F2EBF1] rounded-md transition-colors"
+                                >
+                                    <PanelLeftClose className="h-4 w-4" />
+                                </button>
+                            </div>
+                            {chapters.map(ch => (
+                                <SidebarItem
+                                    key={ch.id}
+                                    item={ch}
+                                    level={ch.level || 1}
+                                    activeItem={activeItem}
+                                    setActiveItem={setActiveItem}
+                                    onAddSubItem={handleAddSubItem}
+                                    onRenameItem={handleRenameItem}
+                                    onDeleteItem={handleDeleteItem}
+                                />
+                            ))}
+                        </div>
+                    ) : (
+                        <div
+                            className="w-12 h-full flex flex-col items-center pt-5 cursor-pointer hover:bg-slate-50"
+                            onClick={() => setIsStructureSidebarOpen(true)}
+                            title="Expand structure"
+                        >
+                            <div className="bg-[#6F155F]/10 p-2 rounded-lg text-[#6F155F]">
+                                <PanelLeftOpen className="h-5 w-5" />
+                            </div>
+                        </div>
+                    )}
                 </aside>
 
-                <main className="flex-1 bg-slate-50/30 overflow-y-auto p-12 flex justify-center min-w-0">
-                    <div className="max-w-2xl w-full min-w-0 bg-white min-h-[800px] border border-gray-200 shadow-sm rounded-xl p-12 overflow-x-hidden">
+                <main className="flex-1 min-h-0 bg-[#F4F2F5] overflow-y-auto px-3 sm:px-5 py-4 sm:py-5 flex justify-center items-start min-w-0">
+                    <div className="max-w-7xl w-full min-w-0 bg-white min-h-[calc(100vh-5.5rem)] border border-slate-200/80 shadow-[0_1px_2px_rgba(15,23,42,0.04),0_10px_28px_rgba(15,23,42,0.06)] rounded-xl">
                         {showCoverMeta && (
-                            <div className="mb-8 border border-gray-200 rounded-lg p-4 bg-slate-50/80 space-y-3">
+                            <div className="mx-6 sm:mx-8 mt-6 mb-4 border border-slate-200 rounded-lg p-4 bg-slate-50/90 space-y-3">
                                 <h3 className="text-sm font-semibold text-slate-800">Title Page &amp; Project Approval</h3>
                                 <p className="text-xs text-slate-500">
                                     Formatting is fixed by ReportPeer. Edit only the project-specific fields below.
@@ -850,250 +1219,557 @@ export default function EditorPage() {
                                 </div>
                             </div>
                         )}
-                        <h2 className="text-3xl font-serif text-slate-900 mb-6">{activeItem.title}</h2>
-                        <textarea
-                            value={contentMap[activeItem.id] || ""}
-                            onChange={(e) => setContentMap(prev => ({ ...prev, [activeItem.id]: e.target.value }))}
-                            className="w-full min-h-[220px] resize-none font-serif text-base leading-relaxed focus:outline-none"
-                            placeholder="Start writing..."
-                        />
-                        <div className="mt-8 border-t border-gray-100 pt-4 min-w-0 max-w-full">
-                            <div className="flex items-center gap-2 mb-3 flex-wrap">
-                                <button
-                                    type="button"
-                                    onClick={() => startOrExtendList("bullet")}
-                                    className="text-xs flex items-center gap-1.5 border border-gray-200 hover:border-[#6F155F] hover:text-[#6F155F] rounded-md px-2.5 py-1.5"
-                                >
-                                    <List className="h-3.5 w-3.5" /> Bullet List
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={() => startOrExtendList("number")}
-                                    className="text-xs flex items-center gap-1.5 border border-gray-200 hover:border-[#6F155F] hover:text-[#6F155F] rounded-md px-2.5 py-1.5"
-                                >
-                                    <ListOrdered className="h-3.5 w-3.5" /> Numbered List
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={addTable}
-                                    className="text-xs flex items-center gap-1.5 border border-gray-200 hover:border-[#6F155F] hover:text-[#6F155F] rounded-md px-2.5 py-1.5"
-                                >
-                                    <Table2 className="h-3.5 w-3.5" /> Add Table
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={() => imageInputRef.current?.click()}
-                                    className="text-xs flex items-center gap-1.5 border border-gray-200 hover:border-[#6F155F] hover:text-[#6F155F] rounded-md px-2.5 py-1.5"
-                                >
-                                    <ImagePlus className="h-3.5 w-3.5" /> Add Image/Figure
-                                </button>
-                                <input
-                                    ref={imageInputRef}
-                                    type="file"
-                                    accept="image/*"
-                                    className="hidden"
-                                    onChange={handleImageUpload}
-                                />
+                        <div className="min-w-0 max-w-full">
+                            <div className="sticky top-0 z-20 bg-white rounded-t-xl shadow-[0_2px_8px_rgba(15,23,42,0.06)]">
+                                <div className="px-5 sm:px-8 py-2.5 flex items-center gap-2 flex-wrap bg-[#6F155F] border-b border-[#57104b] rounded-t-xl">
+                                    <button
+                                        type="button"
+                                        onClick={addParagraphBlock}
+                                        className="text-xs flex items-center gap-1.5 border border-white/35 bg-white text-[#6F155F] hover:bg-[#F2EBF1] rounded-md px-2.5 py-1.5 font-medium shadow-sm transition-colors"
+                                    >
+                                        <FileText className="h-3.5 w-3.5" /> Paragraph
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => startOrExtendList("bullet")}
+                                        className="text-xs flex items-center gap-1.5 border border-white/35 bg-white text-[#6F155F] hover:bg-[#F2EBF1] rounded-md px-2.5 py-1.5 font-medium shadow-sm transition-colors"
+                                    >
+                                        <List className="h-3.5 w-3.5" /> Bullet List
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => startOrExtendList("number")}
+                                        className="text-xs flex items-center gap-1.5 border border-white/35 bg-white text-[#6F155F] hover:bg-[#F2EBF1] rounded-md px-2.5 py-1.5 font-medium shadow-sm transition-colors"
+                                    >
+                                        <ListOrdered className="h-3.5 w-3.5" /> Numbered List
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={addTable}
+                                        className="text-xs flex items-center gap-1.5 border border-white/35 bg-white text-[#6F155F] hover:bg-[#F2EBF1] rounded-md px-2.5 py-1.5 font-medium shadow-sm transition-colors"
+                                    >
+                                        <Table2 className="h-3.5 w-3.5" /> Add Table
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => imageInputRef.current?.click()}
+                                        className="text-xs flex items-center gap-1.5 border border-white/35 bg-white text-[#6F155F] hover:bg-[#F2EBF1] rounded-md px-2.5 py-1.5 font-medium shadow-sm transition-colors"
+                                    >
+                                        <ImagePlus className="h-3.5 w-3.5" /> Add Image/Figure
+                                    </button>
+                                    <input
+                                        ref={imageInputRef}
+                                        type="file"
+                                        accept="image/*"
+                                        className="hidden"
+                                        onChange={handleImageUpload}
+                                    />
+                                    <input
+                                        ref={replaceFigureInputRef}
+                                        type="file"
+                                        accept="image/*"
+                                        className="hidden"
+                                        onChange={handleReplaceFigure}
+                                    />
+                                </div>
+                                <h2 className="text-[1.75rem] leading-snug font-serif text-slate-900 px-5 sm:px-8 pt-4 pb-3.5 border-b border-slate-100">{activeItem.title}</h2>
                             </div>
-                            <p className="text-[11px] text-slate-400 mb-4">
-                                Table and figure numbers are assigned automatically when the report is generated. Enter captions only.
+                            <div className="px-5 sm:px-8 pt-4 pb-10 sm:pb-12 min-w-0">
+                            <p className="text-[11px] text-slate-400 mb-5 leading-relaxed">
+                                Insert at the selected block. Table/figure numbers are assigned on generate. Order is preserved in the DOCX.
                             </p>
-                            {activeLists.map((list) => (
-                                <div key={list.id} className="mb-4 space-y-1.5">
-                                    <div className="text-[10px] uppercase tracking-wider text-gray-400">
-                                        {list.type === "number" ? "Numbered list" : "Bullet list"}
-                                    </div>
-                                    {list.items.map((item, itemIndex) => {
-                                        const numberLabels = list.type === "number" ? listNumberLabels(list.items) : [];
+                            <div className="space-y-6 min-w-0">
+                                {activeBlocks.map((block) => {
+                                    const selected = activeBlockId === block.id;
+                                    if (block.type === "paragraph") {
                                         return (
-                                        <div
-                                            key={item.id}
-                                            className="flex items-center gap-1"
-                                            style={{ paddingLeft: `${(item.level - 1) * 20}px` }}
-                                        >
-                                            <span className="w-10 shrink-0 text-[11px] text-slate-400">
-                                                {list.type === "number"
-                                                    ? numberLabels[itemIndex]
-                                                    : item.level === 1 ? "•" : item.level === 2 ? "o" : "▪"}
-                                            </span>
-                                            <input
-                                                value={item.text}
-                                                onChange={(e) => updateListItem(list.id, item.id, { text: e.target.value })}
-                                                onKeyDown={(e) => {
-                                                    if (e.key === "Enter") {
-                                                        e.preventDefault();
-                                                        const lists = activeLists.map((entry) =>
-                                                            entry.id !== list.id
-                                                                ? entry
-                                                                : {
-                                                                    ...entry,
-                                                                    items: [
-                                                                        ...entry.items.slice(0, itemIndex + 1),
-                                                                        newListItem(item.level),
-                                                                        ...entry.items.slice(itemIndex + 1),
-                                                                    ],
-                                                                }
+                                            <div
+                                                key={block.id}
+                                                className={`group relative -mx-3 rounded-md px-3 py-1 transition-colors ${selected ? "bg-[#F2EBF1]/50" : "hover:bg-slate-50"}`}
+                                                onClick={() => setActiveBlockId(block.id)}
+                                            >
+                                                <textarea
+                                                    ref={(el) => {
+                                                        autoGrowTextarea(el);
+                                                    }}
+                                                    data-focus-id={block.id}
+                                                    value={block.text}
+                                                    rows={1}
+                                                    onFocus={() => setActiveBlockId(block.id)}
+                                                    onChange={(e) => {
+                                                        autoGrowTextarea(e.currentTarget);
+                                                        updateBlock(block.id, (current) =>
+                                                            current.type === "paragraph"
+                                                                ? { ...current, text: e.target.value }
+                                                                : current
                                                         );
-                                                        updateActiveLists(lists);
-                                                    }
-                                                }}
-                                                className="flex-1 text-sm font-serif border-b border-gray-100 focus:border-[#6F155F] focus:outline-none py-1"
-                                                placeholder="List item"
-                                            />
-                                            <button type="button" title="Decrease level" onClick={() => changeListLevel(list.id, itemIndex, -1)} className="p-1 text-gray-400 hover:text-[#6F155F]">
-                                                <IndentDecrease className="h-3.5 w-3.5" />
-                                            </button>
-                                            <button type="button" title="Increase level" onClick={() => changeListLevel(list.id, itemIndex, 1)} className="p-1 text-gray-400 hover:text-[#6F155F]">
-                                                <IndentIncrease className="h-3.5 w-3.5" />
-                                            </button>
-                                            <button type="button" title="Remove item" onClick={() => removeListItem(list.id, item.id)} className="p-1 text-gray-300 hover:text-red-500">
-                                                <Trash2 className="h-3.5 w-3.5" />
-                                            </button>
-                                        </div>
+                                                    }}
+                                                    className="w-full resize-none overflow-hidden bg-transparent font-serif text-[15px] leading-[1.9] text-justify text-slate-800 placeholder:text-slate-300 focus:outline-none"
+                                                    placeholder="Start writing..."
+                                                />
+                                                <button
+                                                    type="button"
+                                                    title="Delete this paragraph"
+                                                    onClick={() => removeBlock(block.id)}
+                                                    className={`absolute top-0.5 right-0 p-1 text-gray-300 transition-opacity hover:text-red-500 group-hover:opacity-100 ${selected ? "opacity-100" : "opacity-0"}`}
+                                                >
+                                                    <Trash2 className="h-3.5 w-3.5" />
+                                                </button>
+                                            </div>
                                         );
-                                    })}
-                                </div>
-                            ))}
-                            {activeTables.map((table) => (
-                                <div key={table.id} className="mb-6 rounded-lg border border-gray-200 p-3 max-w-full min-w-0 overflow-hidden">
-                                    <div className="flex items-center justify-between mb-2">
-                                        <div className="text-[10px] uppercase tracking-wider text-gray-400">Table</div>
-                                        <button type="button" title="Remove table" onClick={() => removeTable(table.id)} className="p-1 text-gray-300 hover:text-red-500">
-                                            <Trash2 className="h-3.5 w-3.5" />
-                                        </button>
-                                    </div>
-                                    <input
-                                        value={table.caption}
-                                        onChange={(e) => updateTable(table.id, (current) => ({ ...current, caption: e.target.value }))}
-                                        className="w-full text-sm font-serif border-b border-gray-100 focus:border-[#6F155F] focus:outline-none py-1 mb-3"
-                                        placeholder="Table caption (number is assigned automatically)"
-                                    />
-                                    <div className="overflow-x-auto max-w-full">
-                                        <table className="w-full min-w-full border-collapse text-sm font-serif table-fixed">
-                                            <thead>
-                                                <tr>
-                                                    {table.columns.map((column, colIndex) => (
-                                                        <th key={`${table.id}-col-${colIndex}`} className="border border-gray-200 p-1 align-top">
-                                                            <div className="flex items-center gap-1 min-w-0">
-                                                                <input
-                                                                    value={column}
-                                                                    onChange={(e) => updateTable(table.id, (current) => ({
-                                                                        ...current,
-                                                                        columns: current.columns.map((value, index) =>
-                                                                            index === colIndex ? e.target.value : value
-                                                                        ),
-                                                                    }))}
-                                                                    className="w-full min-w-0 text-center font-semibold focus:outline-none"
-                                                                    placeholder={`Column ${colIndex + 1}`}
-                                                                />
-                                                                <button
-                                                                    type="button"
-                                                                    title="Remove column"
-                                                                    onClick={() => removeTableColumn(table, colIndex)}
-                                                                    className="text-gray-300 hover:text-red-500 shrink-0"
-                                                                >
-                                                                    ×
-                                                                </button>
-                                                            </div>
-                                                        </th>
-                                                    ))}
-                                                    <th className="w-8 p-0 border-0" aria-hidden />
-                                                </tr>
-                                            </thead>
-                                            <tbody>
-                                                {table.data.map((row, rowIndex) => (
-                                                    <tr key={`${table.id}-row-${rowIndex}`}>
-                                                        {row.map((cell, colIndex) => (
-                                                            <td key={`${table.id}-cell-${rowIndex}-${colIndex}`} className="border border-gray-200 p-1 align-top">
-                                                                <input
-                                                                    value={cell}
-                                                                    onChange={(e) => updateTable(table.id, (current) => ({
-                                                                        ...current,
-                                                                        data: current.data.map((currentRow, currentRowIndex) =>
-                                                                            currentRowIndex === rowIndex
-                                                                                ? currentRow.map((value, currentColIndex) =>
-                                                                                    currentColIndex === colIndex ? e.target.value : value
-                                                                                )
-                                                                                : currentRow
-                                                                        ),
-                                                                    }))}
-                                                                    className="w-full min-w-0 focus:outline-none"
-                                                                    placeholder="Cell"
-                                                                />
-                                                            </td>
-                                                        ))}
-                                                        <td className="p-1 w-8 align-middle">
-                                                            <button
-                                                                type="button"
-                                                                title="Remove row"
-                                                                onClick={() => removeTableRow(table, rowIndex)}
-                                                                className="text-gray-300 hover:text-red-500"
-                                                            >
-                                                                <Trash2 className="h-3.5 w-3.5" />
-                                                            </button>
-                                                        </td>
-                                                    </tr>
+                                    }
+                                    if (block.type === "list") {
+                                        const numberLabels =
+                                            block.listType === "number" ? listNumberLabels(block.items) : [];
+                                        return (
+                                            <div
+                                                key={block.id}
+                                                className={`-mx-3 space-y-1.5 rounded-md px-3 py-2 transition-colors ${selected ? "bg-[#F2EBF1]/50" : ""}`}
+                                                onClick={() => setActiveBlockId(block.id)}
+                                            >
+                                                <div className="flex items-center justify-between">
+                                                    <div className="text-[10px] uppercase tracking-wider text-gray-400">
+                                                        {block.listType === "number" ? "Numbered list" : "Bullet list"}
+                                                    </div>
+                                                    <button type="button" title="Remove list" onClick={() => removeBlock(block.id)} className="p-1 text-gray-300 hover:text-red-500">
+                                                        <Trash2 className="h-3.5 w-3.5" />
+                                                    </button>
+                                                </div>
+                                                {block.items.map((item, itemIndex) => (
+                                                    <div
+                                                        key={item.id}
+                                                        className="flex items-center gap-1"
+                                                        style={{ paddingLeft: `${(item.level - 1) * 20}px` }}
+                                                    >
+                                                        <span className="w-10 shrink-0 text-[11px] text-slate-400">
+                                                            {block.listType === "number"
+                                                                ? numberLabels[itemIndex]
+                                                                : item.level === 1 ? "•" : item.level === 2 ? "o" : "▪"}
+                                                        </span>
+                                                        <input
+                                                            data-focus-id={item.id}
+                                                            value={item.text}
+                                                            onFocus={() => setActiveBlockId(block.id)}
+                                                            onChange={(e) => updateListItem(block.id, item.id, { text: e.target.value })}
+                                                            onKeyDown={(e) => handleListItemKeyDown(e, block.id, itemIndex, item)}
+                                                            className="flex-1 text-sm font-serif border-b border-gray-100 focus:border-[#6F155F] focus:outline-none py-1"
+                                                            placeholder="List item"
+                                                        />
+                                                        <button type="button" title="Decrease level" onClick={() => changeListLevel(block.id, itemIndex, -1)} className="p-1 text-gray-400 hover:text-[#6F155F]">
+                                                            <IndentDecrease className="h-3.5 w-3.5" />
+                                                        </button>
+                                                        <button type="button" title="Increase level" onClick={() => changeListLevel(block.id, itemIndex, 1)} className="p-1 text-gray-400 hover:text-[#6F155F]">
+                                                            <IndentIncrease className="h-3.5 w-3.5" />
+                                                        </button>
+                                                        <button type="button" title="Remove item" onClick={() => removeListItem(block.id, item.id)} className="p-1 text-gray-300 hover:text-red-500">
+                                                            <Trash2 className="h-3.5 w-3.5" />
+                                                        </button>
+                                                    </div>
                                                 ))}
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                    <div className="flex gap-2 mt-3">
-                                        <button type="button" onClick={() => addTableRow(table)} className="text-[11px] border border-gray-200 rounded px-2 py-1 hover:border-[#6F155F] hover:text-[#6F155F]">
-                                            Add row
-                                        </button>
-                                        <button type="button" onClick={() => addTableColumn(table)} className="text-[11px] border border-gray-200 rounded px-2 py-1 hover:border-[#6F155F] hover:text-[#6F155F]">
-                                            Add column
-                                        </button>
-                                    </div>
-                                </div>
-                            ))}
-                            {activeFigures.map((figure) => (
-                                <div key={figure.id} className="mb-6 rounded-lg border border-gray-200 p-3">
-                                    <div className="flex items-center justify-between mb-2">
-                                        <div className="text-[10px] uppercase tracking-wider text-gray-400">Figure</div>
-                                        <button type="button" title="Remove figure" onClick={() => removeFigure(figure.id)} className="p-1 text-gray-300 hover:text-red-500">
-                                            <Trash2 className="h-3.5 w-3.5" />
-                                        </button>
-                                    </div>
-                                    {figure.dataUrl ? (
-                                        <img
-                                            src={figure.dataUrl}
-                                            alt={figure.caption || figure.fileName}
-                                            className="max-h-48 mx-auto mb-3 rounded border border-gray-100 object-contain"
-                                        />
-                                    ) : null}
-                                    <div className="text-[11px] text-slate-400 mb-2">{figure.fileName}</div>
-                                    <input
-                                        value={figure.caption}
-                                        onChange={(e) => updateFigure(figure.id, { caption: e.target.value })}
-                                        className="w-full text-sm font-serif border-b border-gray-100 focus:border-[#6F155F] focus:outline-none py-1"
-                                        placeholder="Figure caption (number is assigned automatically)"
-                                    />
-                                </div>
-                            ))}
+                                            </div>
+                                        );
+                                    }
+                                    if (block.type === "table") {
+                                        const tableActive = selected && selectedTableCells.length > 0;
+                                        const canMerge = canMergeTableCells(block, selectedTableCells);
+                                        const canUnmerge = selectedTableCells.some((ref) =>
+                                            canUnmergeTableCell(block, ref)
+                                        );
+                                        const primaryRef = selectedTableCells[0];
+                                        const primaryCell = primaryRef
+                                            ? getTableCell(block, primaryRef)
+                                            : null;
+                                        const isCellSelected = (ref: TableCellRef) =>
+                                            selectedTableCells.some(
+                                                (cell) => cell.row === ref.row && cell.col === ref.col
+                                            );
+                                        return (
+                                            <div
+                                                key={block.id}
+                                                className={`-mx-3 max-w-full min-w-0 rounded-md px-3 py-2 transition-colors ${selected ? "bg-[#F2EBF1]/50" : ""}`}
+                                                onClick={() => setActiveBlockId(block.id)}
+                                            >
+                                                <div className="flex items-center justify-between mb-2">
+                                                    <div className="text-[10px] uppercase tracking-wider text-gray-400">Table</div>
+                                                    <button type="button" title="Remove table" onClick={() => removeBlock(block.id)} className="p-1 text-gray-300 hover:text-red-500">
+                                                        <Trash2 className="h-3.5 w-3.5" />
+                                                    </button>
+                                                </div>
+                                                <input
+                                                    value={block.caption}
+                                                    onFocus={() => setActiveBlockId(block.id)}
+                                                    onChange={(e) => updateTableBlock(block.id, (current) => ({ ...current, caption: e.target.value }))}
+                                                    className="w-full text-sm font-serif border-b border-gray-100 focus:border-[#6F155F] focus:outline-none py-1 mb-3"
+                                                    placeholder="Table caption (number is assigned automatically)"
+                                                />
+                                                {tableActive ? (
+                                                    <div
+                                                        className="mb-2 flex flex-wrap items-center gap-1 rounded border border-gray-200 bg-gray-50 px-2 py-1.5"
+                                                        onMouseDown={(e) => e.preventDefault()}
+                                                    >
+                                                        <label className="flex items-center gap-1 text-[11px] text-gray-500" title="Cell shading">
+                                                            Fill
+                                                            <input
+                                                                type="color"
+                                                                value={primaryCell?.background || "#ffffff"}
+                                                                onChange={(e) =>
+                                                                    applyFormatToSelectedCells(block, {
+                                                                        background: e.target.value,
+                                                                    })
+                                                                }
+                                                                className="h-6 w-7 cursor-pointer rounded border border-gray-200 bg-white p-0"
+                                                            />
+                                                        </label>
+                                                        <label className="flex items-center gap-1 text-[11px] text-gray-500" title="Text color">
+                                                            Text
+                                                            <input
+                                                                type="color"
+                                                                value={primaryCell?.textColor || "#000000"}
+                                                                onChange={(e) =>
+                                                                    applyFormatToSelectedCells(block, {
+                                                                        textColor: e.target.value,
+                                                                    })
+                                                                }
+                                                                className="h-6 w-7 cursor-pointer rounded border border-gray-200 bg-white p-0"
+                                                            />
+                                                        </label>
+                                                        <button
+                                                            type="button"
+                                                            title="Bold"
+                                                            onClick={() => toggleBoldSelected(block)}
+                                                            className={`rounded border px-1.5 py-1 ${primaryCell?.bold ? "border-[#6F155F] text-[#6F155F] bg-white" : "border-gray-200 text-gray-600 hover:border-[#6F155F]"}`}
+                                                        >
+                                                            <Bold className="h-3.5 w-3.5" />
+                                                        </button>
+                                                        <button type="button" title="Align left" onClick={() => setAlignSelected(block, "left")} className={`rounded border px-1.5 py-1 ${primaryCell?.align === "left" ? "border-[#6F155F] text-[#6F155F]" : "border-gray-200 text-gray-600"}`}>
+                                                            <AlignLeft className="h-3.5 w-3.5" />
+                                                        </button>
+                                                        <button type="button" title="Align center" onClick={() => setAlignSelected(block, "center")} className={`rounded border px-1.5 py-1 ${primaryCell?.align === "center" ? "border-[#6F155F] text-[#6F155F]" : "border-gray-200 text-gray-600"}`}>
+                                                            <AlignCenter className="h-3.5 w-3.5" />
+                                                        </button>
+                                                        <button type="button" title="Align right" onClick={() => setAlignSelected(block, "right")} className={`rounded border px-1.5 py-1 ${primaryCell?.align === "right" ? "border-[#6F155F] text-[#6F155F]" : "border-gray-200 text-gray-600"}`}>
+                                                            <AlignRight className="h-3.5 w-3.5" />
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            title="Merge cells"
+                                                            disabled={!canMerge}
+                                                            onClick={() => mergeSelectedCells(block)}
+                                                            className="rounded border border-gray-200 px-2 py-1 text-[11px] text-gray-600 disabled:opacity-40 hover:border-[#6F155F] hover:text-[#6F155F]"
+                                                        >
+                                                            Merge
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            title="Unmerge cells"
+                                                            disabled={!canUnmerge}
+                                                            onClick={() => unmergeSelectedCell(block)}
+                                                            className="rounded border border-gray-200 px-2 py-1 text-[11px] text-gray-600 disabled:opacity-40 hover:border-[#6F155F] hover:text-[#6F155F]"
+                                                        >
+                                                            Unmerge
+                                                        </button>
+                                                        <span className="text-[10px] text-gray-400 ml-1">Shift/Ctrl+click to select</span>
+                                                    </div>
+                                                ) : null}
+                                                <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain">
+                                                    <table className="w-full max-w-full border-collapse text-sm font-serif table-fixed">
+                                                        <thead>
+                                                            <tr>
+                                                                {block.columns.map((column, colIndex) => {
+                                                                    const cell = normalizeTableCell(column);
+                                                                    if (cell.hidden) return null;
+                                                                    const ref = { row: -1, col: colIndex };
+                                                                    const selectedCell = isCellSelected(ref);
+                                                                    return (
+                                                                        <th
+                                                                            key={`${block.id}-col-${colIndex}`}
+                                                                            colSpan={cell.colspan || 1}
+                                                                            rowSpan={cell.rowspan || 1}
+                                                                            className={`border border-gray-200 p-1 align-top min-w-0 ${selectedCell ? "ring-2 ring-inset ring-[#6F155F]" : ""}`}
+                                                                            style={{ backgroundColor: cell.background || undefined }}
+                                                                            onMouseDown={(e) => {
+                                                                                if (e.button !== 0) return;
+                                                                                e.stopPropagation();
+                                                                                selectTableCell(block.id, ref, e);
+                                                                            }}
+                                                                        >
+                                                                            <div className="flex items-center gap-1 min-w-0">
+                                                                                <input
+                                                                                    value={cell.text}
+                                                                                    onFocus={() => {
+                                                                                        setActiveBlockId(block.id);
+                                                                                        setSelectedTableCells((prev) =>
+                                                                                            prev.some((c) => c.row === ref.row && c.col === ref.col)
+                                                                                                ? prev
+                                                                                                : [ref]
+                                                                                        );
+                                                                                        setTableSelectionAnchor((prev) => prev ?? ref);
+                                                                                    }}
+                                                                                    onChange={(e) =>
+                                                                                        updateTableBlock(block.id, (current) =>
+                                                                                            setTableCell(current, ref, {
+                                                                                                ...getTableCell(current, ref),
+                                                                                                text: e.target.value,
+                                                                                            })
+                                                                                        )
+                                                                                    }
+                                                                                    className="w-full min-w-0 focus:outline-none bg-transparent"
+                                                                                    style={{
+                                                                                        color: cell.textColor || undefined,
+                                                                                        fontWeight:
+                                                                                            cell.bold === false
+                                                                                                ? 400
+                                                                                                : cell.bold
+                                                                                                  ? 700
+                                                                                                  : 600,
+                                                                                        textAlign: cell.align || "center",
+                                                                                    }}
+                                                                                    placeholder={`Column ${colIndex + 1}`}
+                                                                                />
+                                                                                <button
+                                                                                    type="button"
+                                                                                    title="Remove column"
+                                                                                    onMouseDown={(e) => e.stopPropagation()}
+                                                                                    onClick={(e) => {
+                                                                                        e.stopPropagation();
+                                                                                        removeTableColumn(block, colIndex);
+                                                                                    }}
+                                                                                    className="text-gray-300 hover:text-red-500 shrink-0"
+                                                                                >
+                                                                                    ×
+                                                                                </button>
+                                                                            </div>
+                                                                        </th>
+                                                                    );
+                                                                })}
+                                                                <th className="w-8 p-0 border-0" aria-hidden />
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody>
+                                                            {block.data.map((row, rowIndex) => (
+                                                                <tr key={`${block.id}-row-${rowIndex}`}>
+                                                                    {row.map((rawCell, colIndex) => {
+                                                                        const cell = normalizeTableCell(rawCell);
+                                                                        if (cell.hidden) return null;
+                                                                        const ref = { row: rowIndex, col: colIndex };
+                                                                        const selectedCell = isCellSelected(ref);
+                                                                        return (
+                                                                            <td
+                                                                                key={`${block.id}-cell-${rowIndex}-${colIndex}`}
+                                                                                colSpan={cell.colspan || 1}
+                                                                                rowSpan={cell.rowspan || 1}
+                                                                                className={`border border-gray-200 p-1 align-top min-w-0 ${selectedCell ? "ring-2 ring-inset ring-[#6F155F]" : ""}`}
+                                                                                style={{ backgroundColor: cell.background || undefined }}
+                                                                                onMouseDown={(e) => {
+                                                                                    if (e.button !== 0) return;
+                                                                                    e.stopPropagation();
+                                                                                    selectTableCell(block.id, ref, e);
+                                                                                }}
+                                                                            >
+                                                                                <input
+                                                                                    value={cell.text}
+                                                                                    onFocus={() => {
+                                                                                        setActiveBlockId(block.id);
+                                                                                        setSelectedTableCells((prev) =>
+                                                                                            prev.some((c) => c.row === ref.row && c.col === ref.col)
+                                                                                                ? prev
+                                                                                                : [ref]
+                                                                                        );
+                                                                                        setTableSelectionAnchor((prev) => prev ?? ref);
+                                                                                    }}
+                                                                                    onChange={(e) =>
+                                                                                        updateTableBlock(block.id, (current) =>
+                                                                                            setTableCell(current, ref, {
+                                                                                                ...getTableCell(current, ref),
+                                                                                                text: e.target.value,
+                                                                                            })
+                                                                                        )
+                                                                                    }
+                                                                                    className="w-full min-w-0 focus:outline-none bg-transparent"
+                                                                                    style={{
+                                                                                        color: cell.textColor || undefined,
+                                                                                        fontWeight:
+                                                                                            cell.bold === false
+                                                                                                ? 400
+                                                                                                : cell.bold
+                                                                                                  ? 700
+                                                                                                  : undefined,
+                                                                                        textAlign: cell.align || "left",
+                                                                                    }}
+                                                                                    placeholder="Cell"
+                                                                                />
+                                                                            </td>
+                                                                        );
+                                                                    })}
+                                                                    <td className="p-1 w-8 align-middle">
+                                                                        <button
+                                                                            type="button"
+                                                                            title="Remove row"
+                                                                            onClick={() => removeTableRow(block, rowIndex)}
+                                                                            className="text-gray-300 hover:text-red-500"
+                                                                        >
+                                                                            <Trash2 className="h-3.5 w-3.5" />
+                                                                        </button>
+                                                                    </td>
+                                                                </tr>
+                                                            ))}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                                <div className="flex gap-2 mt-3">
+                                                    <button type="button" onClick={() => addTableRow(block)} className="text-[11px] border border-gray-200 rounded px-2 py-1 hover:border-[#6F155F] hover:text-[#6F155F]">
+                                                        Add row
+                                                    </button>
+                                                    <button type="button" onClick={() => addTableColumn(block)} className="text-[11px] border border-gray-200 rounded px-2 py-1 hover:border-[#6F155F] hover:text-[#6F155F]">
+                                                        Add column
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        );
+                                    }
+                                    return (
+                                        <div
+                                            key={block.id}
+                                            className={`-mx-3 rounded-md px-3 py-2 transition-colors ${selected ? "bg-[#F2EBF1]/50" : ""}`}
+                                            onClick={() => setActiveBlockId(block.id)}
+                                        >
+                                            <div className="flex items-center justify-between mb-2 gap-2">
+                                                <div className="text-[10px] uppercase tracking-wider text-gray-400">Figure</div>
+                                                <div className="flex items-center gap-1">
+                                                    <button
+                                                        type="button"
+                                                        title="Replace image"
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            setReplacingFigureId(block.id);
+                                                            replaceFigureInputRef.current?.click();
+                                                        }}
+                                                        className="text-[11px] border border-gray-200 rounded px-2 py-1 hover:border-[#6F155F] hover:text-[#6F155F]"
+                                                    >
+                                                        Replace
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        title="Remove figure"
+                                                        onClick={() => removeBlock(block.id)}
+                                                        className="p-1 text-gray-300 hover:text-red-500"
+                                                    >
+                                                        <Trash2 className="h-3.5 w-3.5" />
+                                                    </button>
+                                                </div>
+                                            </div>
+                                            {block.dataUrl ? (
+                                                <div
+                                                    className={`mb-3 flex ${
+                                                        (block.align || "center") === "left"
+                                                            ? "justify-start"
+                                                            : (block.align || "center") === "right"
+                                                              ? "justify-end"
+                                                              : "justify-center"
+                                                    }`}
+                                                >
+                                                    <img
+                                                        src={block.dataUrl}
+                                                        alt={block.caption || block.fileName}
+                                                        className="rounded border border-gray-100 object-contain"
+                                                        style={{
+                                                            width: `${Math.max(40, Math.min(100, block.widthPercent || 100))}%`,
+                                                            maxWidth: "100%",
+                                                            height: "auto",
+                                                        }}
+                                                    />
+                                                </div>
+                                            ) : (
+                                                <div className="mb-3 text-xs text-slate-400 border border-dashed border-gray-200 rounded p-6 text-center">
+                                                    No image — use Replace to upload one.
+                                                </div>
+                                            )}
+                                            <div className="mb-3 flex flex-wrap items-center gap-2 rounded border border-gray-100 bg-gray-50 px-2 py-1.5">
+                                                <label className="flex items-center gap-2 text-[11px] text-gray-500 min-w-[160px] flex-1">
+                                                    Size
+                                                    <input
+                                                        type="range"
+                                                        min={40}
+                                                        max={100}
+                                                        step={5}
+                                                        value={Math.max(40, Math.min(100, block.widthPercent || 100))}
+                                                        onChange={(e) =>
+                                                            updateFigureBlock(block.id, {
+                                                                widthPercent: Number(e.target.value),
+                                                            })
+                                                        }
+                                                        className="flex-1 accent-[#6F155F]"
+                                                    />
+                                                    <span className="w-10 text-right tabular-nums">{Math.max(40, Math.min(100, block.widthPercent || 100))}%</span>
+                                                </label>
+                                                <div className="flex items-center gap-1">
+                                                    <button
+                                                        type="button"
+                                                        title="Align left"
+                                                        onClick={() => updateFigureBlock(block.id, { align: "left" })}
+                                                        className={`rounded border px-1.5 py-1 ${(block.align || "center") === "left" ? "border-[#6F155F] text-[#6F155F] bg-white" : "border-gray-200 text-gray-600"}`}
+                                                    >
+                                                        <AlignLeft className="h-3.5 w-3.5" />
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        title="Align center"
+                                                        onClick={() => updateFigureBlock(block.id, { align: "center" })}
+                                                        className={`rounded border px-1.5 py-1 ${(block.align || "center") === "center" ? "border-[#6F155F] text-[#6F155F] bg-white" : "border-gray-200 text-gray-600"}`}
+                                                    >
+                                                        <AlignCenter className="h-3.5 w-3.5" />
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        title="Align right"
+                                                        onClick={() => updateFigureBlock(block.id, { align: "right" })}
+                                                        className={`rounded border px-1.5 py-1 ${(block.align || "center") === "right" ? "border-[#6F155F] text-[#6F155F] bg-white" : "border-gray-200 text-gray-600"}`}
+                                                    >
+                                                        <AlignRight className="h-3.5 w-3.5" />
+                                                    </button>
+                                                </div>
+                                            </div>
+                                            <div className="text-[11px] text-slate-400 mb-1 truncate">{block.fileName}</div>
+                                            <div className="flex items-baseline gap-1.5">
+                                                <span className="text-sm font-serif text-slate-500 shrink-0">Figure #.#:</span>
+                                                <input
+                                                    value={block.caption}
+                                                    onFocus={() => setActiveBlockId(block.id)}
+                                                    onChange={(e) =>
+                                                        updateFigureBlock(block.id, { caption: e.target.value })
+                                                    }
+                                                    className="w-full text-sm font-serif border-b border-gray-100 focus:border-[#6F155F] focus:outline-none py-1"
+                                                    placeholder="Caption text (number assigned automatically)"
+                                                />
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                            </div>
                         </div>
                     </div>
                 </main>
 
-                <aside className={`${isAiSidebarOpen ? 'w-80' : 'w-12'} border-l border-gray-100 bg-white transition-all duration-300 shrink-0 overflow-hidden flex flex-col`}>
+                <aside className={`${isAiSidebarOpen ? "w-72" : "w-12"} border-l border-slate-200/80 bg-white transition-all duration-300 shrink-0 overflow-hidden flex flex-col`}>
                     {isAiSidebarOpen ? (
-                        <div className="w-80 h-full flex flex-col">
-                            <div className="p-4 border-b border-gray-100 text-[#6F155F] font-semibold text-sm flex items-center justify-between">
+                        <div className="w-72 h-full flex flex-col">
+                            <div className="px-4 py-3.5 border-b border-slate-200/80 text-[#6F155F] font-semibold text-sm flex items-center justify-between bg-white">
                                 <div className="flex items-center gap-2"><Sparkles className="h-4 w-4" /> Academic AI Copilot</div>
-                                <button onClick={() => setIsAiSidebarOpen(false)}><PanelRightClose className="h-4 w-4 text-gray-400" /></button>
+                                <button type="button" onClick={() => setIsAiSidebarOpen(false)} className="p-1.5 text-slate-400 hover:text-[#6F155F] hover:bg-[#F2EBF1] rounded-md transition-colors"><PanelRightClose className="h-4 w-4" /></button>
                             </div>
-                            <div className="flex-1 p-4 overflow-y-auto bg-slate-50/50 space-y-4">
-                                <div className="bg-white p-3 rounded-lg border border-gray-100 shadow-sm text-xs text-slate-600">How can I help you improve your content?</div>
+                            <div className="flex-1 p-4 overflow-y-auto bg-[#F8F6F9] space-y-4">
+                                <div className="bg-white p-3.5 rounded-lg border border-slate-200/80 shadow-sm text-xs text-slate-600 leading-relaxed">How can I help you improve your content?</div>
                                 <div className="grid grid-cols-1 gap-2">
                                     {["Refine Grammar", "Check Academic Tone", "Expand Details"].map((prompt) => (
-                                        <button key={prompt} className="text-left text-xs bg-white border border-gray-200 hover:text-[#6F155F] p-2 rounded-md">{prompt}</button>
+                                        <button key={prompt} type="button" className="text-left text-xs bg-white border border-slate-200 hover:border-[#6F155F]/40 hover:text-[#6F155F] p-2.5 rounded-md transition-colors">{prompt}</button>
                                     ))}
                                 </div>
                             </div>
-                            <div className="p-3 border-t border-gray-100 bg-white">
+                            <div className="p-3 border-t border-slate-200/80 bg-white">
                                 <div className="relative">
-                                    <input className="w-full text-xs border border-gray-200 rounded-lg p-2.5 focus:outline-none focus:ring-1 focus:ring-[#6F155F]" placeholder="Ask anything..." />
-                                    <button className="absolute right-2 top-2 text-[#6F155F]"><Send className="h-4 w-4" /></button>
+                                    <input className="w-full text-xs border border-slate-200 rounded-lg p-2.5 pr-9 focus:outline-none focus:ring-1 focus:ring-[#6F155F]/40 focus:border-[#6F155F]/40" placeholder="Ask anything..." />
+                                    <button type="button" className="absolute right-2.5 top-2.5 text-[#6F155F]"><Send className="h-4 w-4" /></button>
                                 </div>
                             </div>
                         </div>
