@@ -19,6 +19,9 @@ import {
     type TableCellData,
     type TableCellRef,
     applyBlocksToItem,
+    appendAiDraftToBlocks,
+    replaceParagraphBlocksWithAiDraft,
+    sectionHasParagraphContent,
     canMergeTableCells,
     canUnmergeTableCell,
     clearTableMerges,
@@ -52,10 +55,41 @@ import {
 import {
     type AiProfile,
     AI_PROFILE_FIELDS,
+    EMPTY_AI_PROFILE_MESSAGE,
     emptyAiProfile,
     isAiProfileEmpty,
     normalizeAiProfile,
 } from "@/services/ai/aiProfile";
+import {
+    type AiRefineMode,
+    isUsableAiDraft,
+} from "@/services/ai/prompts";
+import {
+    type FypDiagramKind,
+    FYP_DIAGRAM_CATALOG,
+    applyDiagramFigureToBlocks,
+    countReadyFypDiagrams,
+    findFypDiagramSection,
+    getSectionFiguresWithImage,
+    resolveDiagramInsertImage,
+    resolveFypDiagramStatus,
+} from "@/services/ai/fypDiagrams";
+import {
+    type DiagramSpec,
+    emptyDiagramSpec,
+    normalizePersistedDiagramSpecs,
+    validateDiagramSpec,
+} from "@/services/ai/diagramSpec";
+import { FypDiagramSpecEditor } from "@/components/FypDiagramSpecEditor";
+import { FypDiagramPreview } from "@/components/FypDiagramPreview";
+
+function getSectionParagraphText(blocks: ContentBlock[]): string {
+    return blocks
+        .filter((block): block is Extract<ContentBlock, { type: "paragraph" }> => block.type === "paragraph")
+        .map((block) => (block.text || "").trim())
+        .filter(Boolean)
+        .join("\n\n");
+}
 
 interface TeamMember {
     name: string;
@@ -282,16 +316,46 @@ export default function EditorPage() {
 
     const [chapters, setChapters] = useState<StructureItem[]>([]);
     const [activeItem, setActiveItem] = useState<{ id: string, title: string }>({ id: "", title: "Loading..." });
-    const [isAiSidebarOpen, setIsAiSidebarOpen] = useState(true);
+    const [isAiSidebarOpen, setIsAiSidebarOpen] = useState(false);
     const [aiDraft, setAiDraft] = useState("");
+    const [aiDraftSectionId, setAiDraftSectionId] = useState<string | null>(null);
+    const [aiInsertNotice, setAiInsertNotice] = useState<string | null>(null);
     const [aiError, setAiError] = useState<string | null>(null);
     const [isAiGenerating, setIsAiGenerating] = useState(false);
     const [aiMessage, setAiMessage] = useState("");
+    const [aiClarificationQuestion, setAiClarificationQuestion] = useState<string | null>(null);
+    const [aiClarificationAnswers, setAiClarificationAnswers] = useState<
+        Array<{ question: string; answer: string }>
+    >([]);
     const [aiProfile, setAiProfile] = useState<AiProfile>(() => emptyAiProfile());
     const [aiProfileDraft, setAiProfileDraft] = useState<AiProfile>(() => emptyAiProfile());
     const [isEditingAiProfile, setIsEditingAiProfile] = useState(false);
     const [isSavingAiProfile, setIsSavingAiProfile] = useState(false);
-    const [isStructureSidebarOpen, setIsStructureSidebarOpen] = useState(true);
+    const [isProjectContextOpen, setIsProjectContextOpen] = useState(false);
+    const [isFypDiagramsOpen, setIsFypDiagramsOpen] = useState(false);
+    const [selectedDiagramKind, setSelectedDiagramKind] = useState<FypDiagramKind | null>(null);
+    const [diagramPreviews, setDiagramPreviews] = useState<
+        Partial<Record<FypDiagramKind, { dataUrl: string; fileName: string; mimeType: string }>>
+    >({});
+    const [diagramSpecs, setDiagramSpecs] = useState<Partial<Record<FypDiagramKind, DiagramSpec>>>({});
+    const [diagramClarifications, setDiagramClarifications] = useState<
+        Partial<Record<FypDiagramKind, { question: string; answers: Array<{ question: string; answer: string }> }>>
+    >({});
+    const [diagramClarifyInput, setDiagramClarifyInput] = useState("");
+    const [diagramSpecError, setDiagramSpecError] = useState<string | null>(null);
+    const [isDiagramWorking, setIsDiagramWorking] = useState(false);
+    const [isEditingDiagramSpec, setIsEditingDiagramSpec] = useState(false);
+    const [diagramSpecDraft, setDiagramSpecDraft] = useState<DiagramSpec | null>(null);
+    const [diagramRenderKey, setDiagramRenderKey] = useState(0);
+    const [diagramRenderExport, setDiagramRenderExport] = useState<{
+        kind: FypDiagramKind;
+        pngDataUrl: string | null;
+        svg: string;
+    } | null>(null);
+    const [diagramNotice, setDiagramNotice] = useState<string | null>(null);
+    const diagramUploadInputRef = useRef<HTMLInputElement>(null);
+    const diagramReplaceInputRef = useRef<HTMLInputElement>(null);
+    const [isStructureSidebarOpen, setIsStructureSidebarOpen] = useState(false);
     const [contentMap, setContentMap] = useState<Record<string, string>>({});
     const [coverMeta, setCoverMeta] = useState<CoverMeta>(defaultCoverMeta);
     const [showCoverMeta, setShowCoverMeta] = useState(false);
@@ -328,6 +392,7 @@ export default function EditorPage() {
                 setAiProfile(loadedProfile);
                 setAiProfileDraft(loadedProfile);
                 setIsEditingAiProfile(false);
+                setDiagramSpecs(normalizePersistedDiagramSpecs(data.diagramSpecs));
                 setCoverMeta({
                     ...defaultCoverMeta(),
                     projectTitle: data.projectTitle || data.title || "",
@@ -373,12 +438,25 @@ export default function EditorPage() {
         fetchData();
     }, [id]);
 
+    // Open structure + Copilot sidebars by default on desktop; keep compact on small screens.
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+        if (window.matchMedia("(min-width: 768px)").matches) {
+            setIsStructureSidebarOpen(true);
+            setIsAiSidebarOpen(true);
+        }
+    }, []);
+
     useEffect(() => {
         const item = findStructureItem(chapters, activeItem.id);
         const blocks = item ? ensureContentBlocks(item, contentMap) : [];
         setActiveBlockId(blocks[0]?.id ?? null);
         setSelectedTableCells([]);
         setTableSelectionAnchor(null);
+        // Reset short-lived AI clarification state when switching sections.
+        setAiClarificationQuestion(null);
+        setAiClarificationAnswers([]);
+        setAiInsertNotice(null);
         // Reset insert focus when switching sections.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [activeItem.id]);
@@ -403,7 +481,9 @@ export default function EditorPage() {
     }, [pendingFocusId, chapters, contentMap]);
 
     // --- 2. Save Logic ---
-    const persistProject = async () => {
+    const persistProject = async (overrides?: {
+        diagramSpecs?: Partial<Record<FypDiagramKind, DiagramSpec>>;
+    }) => {
         const submissionMonthYear = formatSubmissionMonthYear(
             coverMeta.submissionMonth,
             coverMeta.submissionYear
@@ -416,6 +496,7 @@ export default function EditorPage() {
                 structure: chapters,
                 references,
                 aiProfile,
+                diagramSpecs: overrides?.diagramSpecs ?? diagramSpecs,
                 title: coverMeta.projectTitle || undefined,
                 projectTitle: coverMeta.projectTitle,
                 projectAdvisor: coverMeta.projectAdvisor,
@@ -445,6 +526,7 @@ export default function EditorPage() {
         }
         setAiProfileDraft(draft);
         setIsEditingAiProfile(true);
+        setIsProjectContextOpen(true);
         setAiError(null);
     };
 
@@ -463,9 +545,16 @@ export default function EditorPage() {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ aiProfile: next }),
             });
-            if (!response.ok) throw new Error("Failed to save Project AI Profile");
-            setAiProfile(next);
-            setAiProfileDraft(next);
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(
+                    typeof data.error === "string" ? data.error : "Failed to save Project AI Profile"
+                );
+            }
+            // Prefer server-normalized profile when present.
+            const saved = normalizeAiProfile(data?.data?.aiProfile ?? next);
+            setAiProfile(saved);
+            setAiProfileDraft(saved);
             setIsEditingAiProfile(false);
         } catch (err) {
             console.error("AI profile save failed", err);
@@ -531,9 +620,32 @@ export default function EditorPage() {
             setAiError("Select a report section first.");
             return;
         }
+        const typed = aiMessage.trim();
+        if (aiClarificationQuestion && !typed) {
+            setAiError("Please answer the clarification question first.");
+            return;
+        }
         setIsAiGenerating(true);
         setAiError(null);
+        setAiInsertNotice(null);
         try {
+            let nextAnswers = aiClarificationAnswers;
+            let forceGenerate = false;
+            let instruction: string | undefined = typed || undefined;
+
+            // If a clarification question is pending and the user typed a reply, record it.
+            if (aiClarificationQuestion && typed) {
+                nextAnswers = [
+                    ...aiClarificationAnswers,
+                    { question: aiClarificationQuestion, answer: typed },
+                ];
+                setAiClarificationAnswers(nextAnswers);
+                setAiClarificationQuestion(null);
+                setAiMessage("");
+                forceGenerate = true;
+                instruction = undefined;
+            }
+
             // Persist latest content so the API reads current section text from Mongo.
             await persistProject();
             const response = await fetch(`/api/projects/${id}/ai`, {
@@ -542,21 +654,247 @@ export default function EditorPage() {
                 body: JSON.stringify({
                     action: "generate",
                     sectionId: activeItem.id,
-                    message: aiMessage.trim() || undefined,
+                    message: instruction,
+                    clarificationAnswers: nextAnswers,
+                    forceGenerate,
                 }),
             });
             const data = await response.json().catch(() => ({}));
             if (!response.ok) {
                 throw new Error(data.error || "Failed to generate AI draft");
             }
-            setAiDraft(typeof data.draft === "string" ? data.draft : "");
+
+            if (data.needs_clarification && typeof data.question === "string" && data.question.trim()) {
+                setAiClarificationQuestion(data.question.trim());
+                setAiDraft("");
+                setAiDraftSectionId(null);
+                setAiInsertNotice(null);
+                return;
+            }
+
+            const draft = typeof data.draft === "string" ? data.draft : "";
+            if (data.needsProfile) {
+                setAiClarificationQuestion(null);
+                setAiDraft(draft || EMPTY_AI_PROFILE_MESSAGE);
+                setAiDraftSectionId(activeItem.id);
+                setAiInsertNotice(null);
+                return;
+            }
+            // Allow the empty-profile guidance message through; reject other unusable drafts.
+            if (!isUsableAiDraft(draft, EMPTY_AI_PROFILE_MESSAGE)) {
+                throw new Error("AI returned an unusable draft. Please try again.");
+            }
+
+            setAiClarificationQuestion(null);
+            setAiDraft(draft);
+            setAiDraftSectionId(activeItem.id);
+            setAiInsertNotice(null);
+            if (instruction) setAiMessage("");
         } catch (err) {
             console.error("AI generate failed", err);
             setAiDraft("");
+            setAiDraftSectionId(null);
             setAiError(err instanceof Error ? err.message : "Failed to generate AI draft");
         } finally {
             setIsAiGenerating(false);
         }
+    };
+
+    /** Improve / grammar / tone / refine: prefer current draft, else active section paragraphs. */
+    const handleAiImprove = async (
+        mode: AiRefineMode = "improve",
+        instructionOverride?: string
+    ) => {
+        if (!id || !activeItem.id) {
+            setAiError("Select a report section first.");
+            return;
+        }
+        if (aiClarificationQuestion) {
+            setAiError("Finish the clarification answer before refining content.");
+            return;
+        }
+
+        const activeItemForImprove = findStructureItem(chapters, activeItem.id);
+        const sectionBlocks = activeItemForImprove
+            ? ensureContentBlocks(activeItemForImprove, contentMap)
+            : [];
+        const sectionParagraphs = getSectionParagraphText(sectionBlocks);
+        const draftForSameSection =
+            aiDraft.trim() &&
+            (aiDraftSectionId === activeItem.id || !aiDraftSectionId)
+                ? aiDraft.trim()
+                : "";
+        const sourceText = draftForSameSection || sectionParagraphs;
+
+        if (!sourceText) {
+            setAiError(
+                "Generate a draft first, or add paragraph text in the selected section, then refine."
+            );
+            return;
+        }
+
+        const instruction =
+            instructionOverride !== undefined
+                ? instructionOverride.trim()
+                : aiMessage.trim();
+
+        setIsAiGenerating(true);
+        setAiError(null);
+        setAiInsertNotice(null);
+        try {
+            await persistProject();
+            const response = await fetch(`/api/projects/${id}/ai`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    action: "improve",
+                    mode,
+                    sectionId: activeItem.id,
+                    sourceText,
+                    message: instruction || undefined,
+                }),
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(data.error || "Failed to refine content");
+            }
+            const draft = typeof data.draft === "string" ? data.draft : "";
+            if (data.needsProfile) {
+                setAiDraft(draft || EMPTY_AI_PROFILE_MESSAGE);
+                setAiDraftSectionId(activeItem.id);
+                setAiInsertNotice(null);
+                return;
+            }
+            if (!isUsableAiDraft(draft, EMPTY_AI_PROFILE_MESSAGE)) {
+                throw new Error("AI returned an unusable draft. Please try again.");
+            }
+            setAiDraft(draft);
+            setAiDraftSectionId(activeItem.id);
+            setAiInsertNotice(null);
+            if (instructionOverride === undefined && aiMessage.trim()) setAiMessage("");
+        } catch (err) {
+            console.error("AI improve failed", err);
+            setAiError(err instanceof Error ? err.message : "Failed to refine content");
+        } finally {
+            setIsAiGenerating(false);
+        }
+    };
+
+    /** Append draft preview into the target section without overwriting existing content. */
+    const handleAiInsert = () => {
+        const draft = aiDraft.trim();
+        if (!draft) {
+            setAiError("No draft to insert. Generate content first.");
+            return;
+        }
+        if (draft === EMPTY_AI_PROFILE_MESSAGE || !isUsableAiDraft(draft, EMPTY_AI_PROFILE_MESSAGE)) {
+            setAiError(
+                draft === EMPTY_AI_PROFILE_MESSAGE
+                    ? "Complete your Project AI Profile before inserting content."
+                    : "Draft is not valid to insert. Generate again."
+            );
+            return;
+        }
+        if (aiClarificationQuestion) {
+            setAiError("Answer the clarification question before inserting.");
+            return;
+        }
+
+        const sectionId = aiDraftSectionId;
+        if (!sectionId) {
+            setAiError("Draft has no target section. Generate again for the selected heading.");
+            return;
+        }
+        const item = findStructureItem(chapters, sectionId);
+        if (!item) {
+            setAiError("Target section not found.");
+            return;
+        }
+
+        const currentBlocks = ensureContentBlocks(item, contentMap);
+        const nextBlocks = appendAiDraftToBlocks(currentBlocks, draft);
+        const { item: nextItem, contentText } = applyBlocksToItem(item, nextBlocks);
+
+        setChapters((prev) => updateStructureItem(prev, sectionId, () => nextItem));
+        setContentMap((prev) => ({ ...prev, [sectionId]: contentText }));
+
+        const inserted = nextBlocks.find(
+            (block) =>
+                block.type === "paragraph" &&
+                draft.split(/\n{2,}/).some((part) => part.trim() && block.text.includes(part.trim().slice(0, 40)))
+        );
+        if (inserted) {
+            setActiveBlockId(inserted.id);
+            setPendingFocusId(inserted.id);
+        }
+
+        setActiveItem({ id: sectionId, title: formatHeadingLabel(nextItem) });
+        setAiError(null);
+        setAiInsertNotice(
+            `Appended into ${formatHeadingLabel(nextItem)}. Existing paragraphs, lists, tables, and figures were kept.`
+        );
+    };
+
+    /**
+     * Replace paragraph text in the draft's target section only.
+     * Lists, tables, and figures are preserved. Explicit user action — never silent.
+     */
+    const handleAiReplace = () => {
+        const draft = aiDraft.trim();
+        if (!draft) {
+            setAiError("No draft to apply. Generate or refine content first.");
+            return;
+        }
+        if (draft === EMPTY_AI_PROFILE_MESSAGE || !isUsableAiDraft(draft, EMPTY_AI_PROFILE_MESSAGE)) {
+            setAiError(
+                draft === EMPTY_AI_PROFILE_MESSAGE
+                    ? "Complete your Project AI Profile before replacing content."
+                    : "Draft is not valid to apply. Generate again."
+            );
+            return;
+        }
+        if (aiClarificationQuestion) {
+            setAiError("Answer the clarification question before replacing.");
+            return;
+        }
+
+        const sectionId = aiDraftSectionId;
+        if (!sectionId) {
+            setAiError("Draft has no target section. Generate again for the selected heading.");
+            return;
+        }
+        const item = findStructureItem(chapters, sectionId);
+        if (!item) {
+            setAiError("Target section not found.");
+            return;
+        }
+
+        const currentBlocks = ensureContentBlocks(item, contentMap);
+        const nextBlocks = replaceParagraphBlocksWithAiDraft(currentBlocks, draft);
+        const { item: nextItem, contentText } = applyBlocksToItem(item, nextBlocks);
+
+        setChapters((prev) => updateStructureItem(prev, sectionId, () => nextItem));
+        setContentMap((prev) => ({ ...prev, [sectionId]: contentText }));
+
+        const firstPara = nextBlocks.find((block) => block.type === "paragraph");
+        if (firstPara) {
+            setActiveBlockId(firstPara.id);
+            setPendingFocusId(firstPara.id);
+        }
+
+        setActiveItem({ id: sectionId, title: formatHeadingLabel(nextItem) });
+        setAiError(null);
+        setAiInsertNotice(
+            `Replaced paragraphs in ${formatHeadingLabel(nextItem)}. Lists, tables, and figures were preserved.`
+        );
+    };
+
+    const handleAiCancelDraft = () => {
+        setAiDraft("");
+        setAiDraftSectionId(null);
+        setAiInsertNotice(null);
+        setAiError(null);
+        setAiClarificationQuestion(null);
     };
 
 
@@ -673,6 +1011,413 @@ export default function EditorPage() {
     const activeBlocks: ContentBlock[] = activeItemData
         ? ensureContentBlocks(activeItemData, contentMap)
         : [];
+    const aiProfileComplete = !isAiProfileEmpty(aiProfile);
+    const aiProfileSummaryTitle =
+        aiProfile.projectTitle.trim() ||
+        coverMeta.projectTitle.trim() ||
+        "Untitled project";
+    const canRunAiRefine =
+        Boolean(activeItem.id) &&
+        !isAiGenerating &&
+        !isSaving &&
+        !isSavingAiProfile &&
+        !aiClarificationQuestion &&
+        Boolean(
+            (aiDraft.trim() &&
+                (aiDraftSectionId === activeItem.id || !aiDraftSectionId)) ||
+                sectionHasParagraphContent(activeBlocks)
+        );
+    const aiDraftTargetLabel = aiDraftSectionId
+        ? (() => {
+              const target = findStructureItem(chapters, aiDraftSectionId);
+              return target ? formatHeadingLabel(target) : "Section";
+          })()
+        : null;
+
+    const fypDiagramRows = FYP_DIAGRAM_CATALOG.map((entry) => {
+        const section = findFypDiagramSection(chapters, entry);
+        const figures = getSectionFiguresWithImage(section, contentMap);
+        const localPreview = diagramPreviews[entry.kind];
+        const hasSpec = Boolean(diagramSpecs[entry.kind]);
+        const needsDetails = Boolean(diagramClarifications[entry.kind]?.question);
+        const status = resolveFypDiagramStatus({
+            inReportFigureCount: figures.length,
+            hasLocalPreview: Boolean(localPreview?.dataUrl) || hasSpec,
+            needsDetails,
+        });
+        return { entry, section, figures, localPreview, status, hasSpec };
+    });
+    const fypDiagramsReadyCount = countReadyFypDiagrams(fypDiagramRows.map((row) => row.status));
+    const selectedDiagramRow =
+        selectedDiagramKind != null
+            ? fypDiagramRows.find((row) => row.entry.kind === selectedDiagramKind) || null
+            : null;
+    const selectedDiagramDisplay =
+        selectedDiagramRow?.localPreview?.dataUrl ||
+        selectedDiagramRow?.figures[0]?.dataUrl ||
+        null;
+    const selectedDiagramFileName =
+        selectedDiagramRow?.localPreview?.fileName ||
+        selectedDiagramRow?.figures[0]?.fileName ||
+        "diagram.png";
+
+    const commitBlocksToSection = (sectionId: string, blocks: ContentBlock[]) => {
+        const item = findStructureItem(chapters, sectionId);
+        if (!item) {
+            setAiError("Diagram target section not found in this report.");
+            return null;
+        }
+        const { item: nextItem, contentText } = applyBlocksToItem(item, blocks);
+        setChapters((prev) => updateStructureItem(prev, sectionId, () => nextItem));
+        setContentMap((prev) => ({ ...prev, [sectionId]: contentText }));
+        setActiveItem({ id: sectionId, title: formatHeadingLabel(nextItem) });
+        return nextItem;
+    };
+
+    const resolveSelectedDiagramImage = () => {
+        if (!selectedDiagramKind || !selectedDiagramRow) return null;
+        const rendered =
+            diagramRenderExport?.kind === selectedDiagramKind ? diagramRenderExport : null;
+        return resolveDiagramInsertImage({
+            kind: selectedDiagramKind,
+            renderedPngDataUrl: rendered?.pngDataUrl || null,
+            renderedSvg: rendered?.svg || null,
+            uploadPreview: selectedDiagramRow.localPreview || null,
+        });
+    };
+
+    const handleDiagramUploadFile = (event: ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+        event.target.value = "";
+        if (!file || !selectedDiagramKind) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+            const dataUrl = typeof reader.result === "string" ? reader.result : "";
+            if (!dataUrl) return;
+            setDiagramPreviews((prev) => ({
+                ...prev,
+                [selectedDiagramKind]: {
+                    dataUrl,
+                    fileName: file.name,
+                    mimeType: file.type || "image/png",
+                },
+            }));
+            setDiagramRenderExport(null);
+            setAiError(null);
+            setDiagramNotice(null);
+            setDiagramSpecError(null);
+        };
+        reader.readAsDataURL(file);
+    };
+
+    const handleDiagramInsert = () => {
+        if (!selectedDiagramRow) return;
+        const section = selectedDiagramRow.section;
+        if (!section) {
+            setDiagramSpecError(
+                `Section ${selectedDiagramRow.entry.sectionId} not found. Re-open or recreate the project.`
+            );
+            return;
+        }
+        const image = resolveSelectedDiagramImage();
+        if (!image) {
+            setDiagramSpecError(
+                "Render or upload a diagram image before inserting into the report."
+            );
+            return;
+        }
+        const currentBlocks = ensureContentBlocks(section, contentMap);
+        const existingFigure = selectedDiagramRow.figures[0];
+        const applied = applyDiagramFigureToBlocks({
+            blocks: currentBlocks,
+            image,
+            defaultCaption: selectedDiagramRow.entry.defaultCaption,
+            existingFigureId: existingFigure?.id || null,
+        });
+        commitBlocksToSection(section.id, applied.blocks);
+        setDiagramPreviews((prev) => {
+            const next = { ...prev };
+            delete next[selectedDiagramRow.entry.kind];
+            return next;
+        });
+        setAiError(null);
+        setDiagramSpecError(null);
+        setDiagramNotice(
+            applied.mode === "replace"
+                ? `Replaced ${selectedDiagramRow.entry.label} in ${formatHeadingLabel(section)}.`
+                : `Inserted ${selectedDiagramRow.entry.label} into ${formatHeadingLabel(section)}.`
+        );
+    };
+
+    const handleDiagramReplaceFigure = (event: ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+        event.target.value = "";
+        if (!file || !selectedDiagramRow?.section) return;
+        const targetFigure = selectedDiagramRow.figures[0];
+        if (!targetFigure) {
+            setDiagramSpecError("No figure in this section to replace. Insert first.");
+            return;
+        }
+        const reader = new FileReader();
+        reader.onload = () => {
+            const dataUrl = typeof reader.result === "string" ? reader.result : "";
+            if (!dataUrl) return;
+            const section = selectedDiagramRow.section!;
+            const applied = applyDiagramFigureToBlocks({
+                blocks: ensureContentBlocks(section, contentMap),
+                image: {
+                    dataUrl,
+                    fileName: file.name,
+                    mimeType: file.type || "image/png",
+                },
+                defaultCaption: selectedDiagramRow.entry.defaultCaption,
+                existingFigureId: targetFigure.id,
+            });
+            commitBlocksToSection(section.id, applied.blocks);
+            setDiagramPreviews((prev) => {
+                const next = { ...prev };
+                delete next[selectedDiagramRow.entry.kind];
+                return next;
+            });
+            setAiError(null);
+            setDiagramSpecError(null);
+            setDiagramNotice(`Replaced figure in ${selectedDiagramRow.entry.label}.`);
+        };
+        reader.readAsDataURL(file);
+    };
+
+    const handleDiagramDelete = () => {
+        if (!selectedDiagramRow?.section) return;
+        const targetFigure = selectedDiagramRow.figures[0];
+        const section = selectedDiagramRow.section;
+        if (targetFigure) {
+            const blocks = ensureContentBlocks(section, contentMap).filter(
+                (block) => !(block.type === "figure" && block.id === targetFigure.id)
+            );
+            const next =
+                blocks.length > 0
+                    ? blocks
+                    : [{ id: newId("p"), type: "paragraph" as const, text: "" }];
+            commitBlocksToSection(section.id, next);
+        }
+        setDiagramPreviews((prev) => {
+            const next = { ...prev };
+            delete next[selectedDiagramRow.entry.kind];
+            return next;
+        });
+        setAiError(null);
+        setDiagramSpecError(null);
+        setDiagramNotice(
+            targetFigure
+                ? `Deleted ${selectedDiagramRow.entry.label} figure from the report.`
+                : "Cleared diagram preview."
+        );
+    };
+
+    const handleDiagramDownload = () => {
+        const kind = selectedDiagramKind;
+        const rendered =
+            kind && diagramRenderExport?.kind === kind ? diagramRenderExport : null;
+        const dataUrl =
+            rendered?.pngDataUrl ||
+            selectedDiagramRow?.localPreview?.dataUrl ||
+            selectedDiagramRow?.figures[0]?.dataUrl ||
+            null;
+        if (!dataUrl && rendered?.svg) {
+            const blob = new Blob([rendered.svg], { type: "image/svg+xml;charset=utf-8" });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = `${selectedDiagramRow?.entry.kind || "diagram"}.svg`;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            URL.revokeObjectURL(url);
+            return;
+        }
+        if (!dataUrl) {
+            setAiError("Nothing to download yet. Generate a spec or upload an image first.");
+            return;
+        }
+        const link = document.createElement("a");
+        link.href = dataUrl;
+        link.download =
+            rendered?.pngDataUrl
+                ? `${selectedDiagramRow?.entry.kind || "diagram"}.png`
+                : selectedDiagramFileName || "diagram.png";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+    };
+
+    const handleDiagramRegeneratePreview = () => {
+        if (!selectedDiagramKind || !diagramSpecs[selectedDiagramKind]) {
+            setDiagramSpecError("Generate or edit a valid specification first.");
+            return;
+        }
+        const validated = validateDiagramSpec(
+            selectedDiagramKind,
+            diagramSpecs[selectedDiagramKind]!
+        );
+        if (!validated.ok) {
+            setDiagramSpecError(validated.error);
+            return;
+        }
+        setDiagramSpecError(null);
+        setDiagramRenderKey((k) => k + 1);
+    };
+
+    const handleDiagramGenerate = async (opts?: { force?: boolean }) => {
+        if (!id || !selectedDiagramKind || !selectedDiagramRow) {
+            setAiError("Select a diagram first.");
+            return;
+        }
+        const kind = selectedDiagramKind;
+        const pending = diagramClarifications[kind];
+        if (pending?.question && !diagramClarifyInput.trim() && !opts?.force) {
+            setDiagramSpecError("Answer the clarification question first.");
+            return;
+        }
+
+        setIsDiagramWorking(true);
+        setDiagramSpecError(null);
+        setAiError(null);
+        try {
+            let answers = pending?.answers || [];
+            let forceGenerate = Boolean(opts?.force);
+            if (pending?.question && diagramClarifyInput.trim()) {
+                answers = [
+                    ...answers,
+                    { question: pending.question, answer: diagramClarifyInput.trim() },
+                ];
+                forceGenerate = true;
+                setDiagramClarifyInput("");
+            }
+
+            await persistProject();
+            const response = await fetch(`/api/projects/${id}/diagrams`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    action: "generate",
+                    kind,
+                    clarificationAnswers: answers,
+                    forceGenerate,
+                }),
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(
+                    typeof data.error === "string" ? data.error : "Failed to generate diagram spec"
+                );
+            }
+            if (data.needsProfile) {
+                setDiagramSpecError(
+                    typeof data.error === "string"
+                        ? data.error
+                        : "Complete your Project AI Profile first."
+                );
+                return;
+            }
+            if (data.needs_clarification && typeof data.question === "string" && data.question.trim()) {
+                setDiagramClarifications((prev) => ({
+                    ...prev,
+                    [kind]: { question: data.question.trim(), answers },
+                }));
+                setDiagramSpecs((prev) => {
+                    const next = { ...prev };
+                    delete next[kind];
+                    return next;
+                });
+                setIsEditingDiagramSpec(false);
+                setDiagramSpecDraft(null);
+                return;
+            }
+
+            if (!data.spec) {
+                throw new Error("AI returned no diagram specification.");
+            }
+            const validated = validateDiagramSpec(kind, data.spec);
+            if (!validated.ok) {
+                setDiagramSpecError(validated.error);
+                return;
+            }
+            const nextSpecs = { ...diagramSpecs, [kind]: validated.spec };
+            setDiagramSpecs(nextSpecs);
+            setDiagramClarifications((prev) => {
+                const next = { ...prev };
+                delete next[kind];
+                return next;
+            });
+            setIsEditingDiagramSpec(false);
+            setDiagramSpecDraft(null);
+            setDiagramRenderKey((k) => k + 1);
+            setDiagramNotice(`${selectedDiagramRow.entry.label} specification ready.`);
+            try {
+                await persistProject({ diagramSpecs: nextSpecs });
+            } catch (persistErr) {
+                console.error("Failed to persist diagram spec", persistErr);
+                setDiagramSpecError(
+                    "Specification generated but could not be saved. Use Save to persist the project."
+                );
+            }
+        } catch (err) {
+            console.error("Diagram generate failed", err);
+            setDiagramSpecError(err instanceof Error ? err.message : "Failed to generate diagram spec");
+        } finally {
+            setIsDiagramWorking(false);
+        }
+    };
+
+    const beginEditDiagramSpec = () => {
+        if (!selectedDiagramKind) return;
+        const existing = diagramSpecs[selectedDiagramKind];
+        setDiagramSpecDraft(existing ? structuredClone(existing) : emptyDiagramSpec(selectedDiagramKind));
+        setIsEditingDiagramSpec(true);
+        setDiagramSpecError(null);
+        setDiagramNotice(null);
+    };
+
+    const saveEditedDiagramSpec = async () => {
+        if (!selectedDiagramKind || !diagramSpecDraft) return;
+        const validated = validateDiagramSpec(selectedDiagramKind, diagramSpecDraft);
+        if (!validated.ok) {
+            setDiagramSpecError(validated.error);
+            return;
+        }
+        const nextSpecs = { ...diagramSpecs, [selectedDiagramKind]: validated.spec };
+        setDiagramSpecs(nextSpecs);
+        setIsEditingDiagramSpec(false);
+        setDiagramSpecDraft(null);
+        setDiagramSpecError(null);
+        setDiagramRenderKey((k) => k + 1);
+        setDiagramClarifications((prev) => {
+            const next = { ...prev };
+            delete next[selectedDiagramKind];
+            return next;
+        });
+        setDiagramNotice("Specification updated — preview refreshed.");
+        try {
+            await persistProject({ diagramSpecs: nextSpecs });
+        } catch (persistErr) {
+            console.error("Failed to persist edited diagram spec", persistErr);
+            setDiagramSpecError(
+                "Specification updated locally but could not be saved. Use Save to persist the project."
+            );
+        }
+    };
+
+    const openDiagramRow = (kind: FypDiagramKind) => {
+        setSelectedDiagramKind(kind);
+        setIsFypDiagramsOpen(true);
+        setAiError(null);
+        setDiagramSpecError(null);
+        setDiagramClarifyInput("");
+        setIsEditingDiagramSpec(false);
+        setDiagramSpecDraft(null);
+        setDiagramRenderExport(null);
+        setDiagramNotice(null);
+    };
 
     const commitBlocks = (blocks: ContentBlock[]) => {
         if (!activeItemData) return;
@@ -1152,61 +1897,86 @@ export default function EditorPage() {
 
     return (
         <div className="h-screen flex flex-col bg-[#F4F2F5] overflow-hidden">
-            <header className="h-14 border-b border-slate-200/80 bg-white px-4 flex items-center justify-between shrink-0 shadow-[0_1px_0_rgba(15,23,42,0.03)]">
-                <div className="flex items-center gap-3">
-                    <Link href="/dashboard" className="text-slate-400 hover:text-[#6F155F] transition-colors"><ChevronLeft className="h-5 w-5" /></Link>
-                    <h1 className="text-sm font-semibold tracking-tight text-slate-800">Editor</h1>
+            <header className="h-14 border-b border-slate-200/80 bg-white px-3 sm:px-4 flex items-center justify-between gap-2 shrink-0 shadow-[0_1px_0_rgba(15,23,42,0.03)]">
+                <div className="flex items-center gap-2 sm:gap-3 min-w-0 shrink-0">
+                    <Link href="/dashboard" className="text-slate-400 hover:text-[#6F155F] transition-colors shrink-0" title="Back to dashboard">
+                        <ChevronLeft className="h-5 w-5" />
+                    </Link>
+                    <h1 className="text-sm font-semibold tracking-tight text-slate-800 truncate">Editor</h1>
                 </div>
-                <div className="flex items-center gap-2.5">
+                <div className="flex items-center gap-1 sm:gap-1.5 min-w-0 overflow-x-auto no-scrollbar justify-end">
                     <button
                         onClick={() => setShowCoverMeta((open) => !open)}
-                        className="text-xs flex items-center gap-1.5 text-slate-500 hover:text-[#6F155F] px-2 py-1.5 rounded-md hover:bg-slate-50 transition-colors"
+                        className={`text-xs flex items-center gap-1.5 px-2 py-1.5 rounded-md transition-colors shrink-0 ${
+                            showCoverMeta
+                                ? "text-[#6F155F] bg-[#F2EBF1]"
+                                : "text-slate-500 hover:text-[#6F155F] hover:bg-slate-50"
+                        }`}
                         type="button"
+                        title="Title page and approval fields"
                     >
                         <FileText className="h-3.5 w-3.5" />
-                        {showCoverMeta ? "Hide Cover Details" : "Title & Approval"}
+                        <span className="hidden sm:inline">Title &amp; Approval</span>
                     </button>
                     <button
                         onClick={() => setShowReferences((open) => !open)}
-                        className="text-xs flex items-center gap-1.5 text-slate-500 hover:text-[#6F155F] px-2 py-1.5 rounded-md hover:bg-slate-50 transition-colors"
+                        className={`text-xs flex items-center gap-1.5 px-2 py-1.5 rounded-md transition-colors shrink-0 ${
+                            showReferences
+                                ? "text-[#6F155F] bg-[#F2EBF1]"
+                                : "text-slate-500 hover:text-[#6F155F] hover:bg-slate-50"
+                        }`}
                         type="button"
+                        title="References"
                     >
                         <Quote className="h-3.5 w-3.5" />
-                        {showReferences ? "Hide References" : "References"}
+                        <span className="hidden sm:inline">References</span>
                     </button>
                     <button
                         onClick={handleSave}
                         disabled={isSaving || isGenerating}
-                        className="text-xs flex items-center gap-1.5 text-slate-500 hover:text-[#6F155F] px-2 py-1.5 rounded-md hover:bg-slate-50 transition-colors disabled:opacity-50"
+                        className="text-xs flex items-center gap-1.5 text-slate-500 hover:text-[#6F155F] px-2 py-1.5 rounded-md hover:bg-slate-50 transition-colors disabled:opacity-50 shrink-0"
+                        title="Save project"
                     >
-                        {isSaving ? "Saving..." : <><Save className="h-3.5 w-3.5" /> Save</>}
+                        {isSaving ? "Saving…" : <><Save className="h-3.5 w-3.5" /><span className="hidden md:inline">Save</span></>}
                     </button>
                     <button
                         onClick={() => handleGenerate("docx")}
                         disabled={isSaving || isGenerating}
-                        className="text-xs flex items-center gap-1.5 rounded-lg bg-[#6F155F] hover:bg-[#57104b] text-white px-3.5 py-1.5 font-medium shadow-sm disabled:opacity-50 transition-colors"
+                        className="text-xs flex items-center gap-1.5 rounded-lg bg-[#6F155F] hover:bg-[#57104b] text-white px-2.5 sm:px-3 py-1.5 font-medium shadow-sm disabled:opacity-50 transition-colors shrink-0"
+                        title="Generate DOCX"
                     >
                         {isGenerating && generatingFormat === "docx" ? (
-                            <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Generating DOCX...</>
+                            <><Loader2 className="h-3.5 w-3.5 animate-spin" /><span className="hidden sm:inline">DOCX…</span></>
                         ) : (
-                            <><FileDown className="h-3.5 w-3.5" /> Generate DOCX</>
+                            <><FileDown className="h-3.5 w-3.5" /><span className="hidden sm:inline">DOCX</span></>
                         )}
                     </button>
                     <button
                         onClick={() => handleGenerate("pdf")}
                         disabled={isSaving || isGenerating}
-                        className="text-xs flex items-center gap-1.5 rounded-lg border border-[#6F155F] bg-white hover:bg-[#F2EBF1] text-[#6F155F] px-3.5 py-1.5 font-medium shadow-sm disabled:opacity-50 transition-colors"
+                        className="text-xs flex items-center gap-1.5 rounded-lg border border-[#6F155F] bg-white hover:bg-[#F2EBF1] text-[#6F155F] px-2.5 sm:px-3 py-1.5 font-medium shadow-sm disabled:opacity-50 transition-colors shrink-0"
+                        title="Generate PDF"
                     >
                         {isGenerating && generatingFormat === "pdf" ? (
-                            <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Generating PDF...</>
+                            <><Loader2 className="h-3.5 w-3.5 animate-spin" /><span className="hidden sm:inline">PDF…</span></>
                         ) : (
-                            <><FileText className="h-3.5 w-3.5" /> Generate PDF</>
+                            <><FileText className="h-3.5 w-3.5" /><span className="hidden sm:inline">PDF</span></>
                         )}
                     </button>
-                    <button onClick={() => setIsAiSidebarOpen(!isAiSidebarOpen)} className="p-2 text-slate-500 hover:text-[#6F155F] hover:bg-slate-50 rounded-lg transition-colors" title={isAiSidebarOpen ? "Collapse AI" : "Expand AI"}>
+                    <button
+                        onClick={() => setIsAiSidebarOpen(!isAiSidebarOpen)}
+                        className={`p-2 rounded-lg transition-colors shrink-0 ${
+                            isAiSidebarOpen
+                                ? "text-[#6F155F] bg-[#F2EBF1]"
+                                : "text-slate-500 hover:text-[#6F155F] hover:bg-slate-50"
+                        }`}
+                        title={isAiSidebarOpen ? "Hide Copilot" : "Show Copilot"}
+                    >
                         {isAiSidebarOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
                     </button>
-                    <UserButton />
+                    <div className="shrink-0 pl-0.5">
+                        <UserButton />
+                    </div>
                 </div>
             </header>
 
@@ -1650,41 +2420,50 @@ export default function EditorPage() {
                         )}
                         <div className="min-w-0 max-w-full">
                             <div className="sticky top-0 z-20 bg-white rounded-t-xl shadow-[0_2px_8px_rgba(15,23,42,0.06)]">
-                                <div className="px-5 sm:px-8 py-2.5 flex items-center gap-2 flex-wrap bg-[#6F155F] border-b border-[#57104b] rounded-t-xl">
+                                <div className="px-3 sm:px-5 lg:px-8 py-2 flex items-center gap-1.5 sm:gap-2 flex-wrap bg-[#6F155F] border-b border-[#57104b] rounded-t-xl">
                                     <button
                                         type="button"
                                         onClick={addParagraphBlock}
-                                        className="text-xs flex items-center gap-1.5 border border-white/35 bg-white text-[#6F155F] hover:bg-[#F2EBF1] rounded-md px-2.5 py-1.5 font-medium shadow-sm transition-colors"
+                                        className="text-xs flex items-center gap-1.5 border border-white/35 bg-white text-[#6F155F] hover:bg-[#F2EBF1] rounded-md px-2 sm:px-2.5 py-1.5 font-medium shadow-sm transition-colors"
                                     >
-                                        <FileText className="h-3.5 w-3.5" /> Paragraph
+                                        <FileText className="h-3.5 w-3.5" />
+                                        <span className="hidden sm:inline">Paragraph</span>
                                     </button>
                                     <button
                                         type="button"
                                         onClick={() => startOrExtendList("bullet")}
-                                        className="text-xs flex items-center gap-1.5 border border-white/35 bg-white text-[#6F155F] hover:bg-[#F2EBF1] rounded-md px-2.5 py-1.5 font-medium shadow-sm transition-colors"
+                                        className="text-xs flex items-center gap-1.5 border border-white/35 bg-white text-[#6F155F] hover:bg-[#F2EBF1] rounded-md px-2 sm:px-2.5 py-1.5 font-medium shadow-sm transition-colors"
+                                        title="Bullet list"
                                     >
-                                        <List className="h-3.5 w-3.5" /> Bullet List
+                                        <List className="h-3.5 w-3.5" />
+                                        <span className="hidden md:inline">Bullet List</span>
                                     </button>
                                     <button
                                         type="button"
                                         onClick={() => startOrExtendList("number")}
-                                        className="text-xs flex items-center gap-1.5 border border-white/35 bg-white text-[#6F155F] hover:bg-[#F2EBF1] rounded-md px-2.5 py-1.5 font-medium shadow-sm transition-colors"
+                                        className="text-xs flex items-center gap-1.5 border border-white/35 bg-white text-[#6F155F] hover:bg-[#F2EBF1] rounded-md px-2 sm:px-2.5 py-1.5 font-medium shadow-sm transition-colors"
+                                        title="Numbered list"
                                     >
-                                        <ListOrdered className="h-3.5 w-3.5" /> Numbered List
+                                        <ListOrdered className="h-3.5 w-3.5" />
+                                        <span className="hidden md:inline">Numbered List</span>
                                     </button>
                                     <button
                                         type="button"
                                         onClick={addTable}
-                                        className="text-xs flex items-center gap-1.5 border border-white/35 bg-white text-[#6F155F] hover:bg-[#F2EBF1] rounded-md px-2.5 py-1.5 font-medium shadow-sm transition-colors"
+                                        className="text-xs flex items-center gap-1.5 border border-white/35 bg-white text-[#6F155F] hover:bg-[#F2EBF1] rounded-md px-2 sm:px-2.5 py-1.5 font-medium shadow-sm transition-colors"
+                                        title="Add table"
                                     >
-                                        <Table2 className="h-3.5 w-3.5" /> Add Table
+                                        <Table2 className="h-3.5 w-3.5" />
+                                        <span className="hidden md:inline">Add Table</span>
                                     </button>
                                     <button
                                         type="button"
                                         onClick={() => imageInputRef.current?.click()}
-                                        className="text-xs flex items-center gap-1.5 border border-white/35 bg-white text-[#6F155F] hover:bg-[#F2EBF1] rounded-md px-2.5 py-1.5 font-medium shadow-sm transition-colors"
+                                        className="text-xs flex items-center gap-1.5 border border-white/35 bg-white text-[#6F155F] hover:bg-[#F2EBF1] rounded-md px-2 sm:px-2.5 py-1.5 font-medium shadow-sm transition-colors"
+                                        title="Add image or figure"
                                     >
-                                        <ImagePlus className="h-3.5 w-3.5" /> Add Image/Figure
+                                        <ImagePlus className="h-3.5 w-3.5" />
+                                        <span className="hidden md:inline">Add Figure</span>
                                     </button>
                                     <input
                                         ref={imageInputRef}
@@ -1704,9 +2483,6 @@ export default function EditorPage() {
                                 <h2 className="text-[1.75rem] leading-snug font-serif text-slate-900 px-5 sm:px-8 pt-4 pb-3.5 border-b border-slate-100">{activeItem.title}</h2>
                             </div>
                             <div className="px-5 sm:px-8 pt-4 pb-10 sm:pb-12 min-w-0">
-                            <p className="text-[11px] text-slate-400 mb-5 leading-relaxed">
-                                Insert at the selected block. Table/figure numbers are assigned on generate. Order is preserved in the DOCX.
-                            </p>
                             <div className="space-y-6 min-w-0">
                                 {activeBlocks.map((block) => {
                                     const selected = activeBlockId === block.id;
@@ -2198,149 +2974,654 @@ export default function EditorPage() {
                     </div>
                 </main>
 
-                <aside className={`${isAiSidebarOpen ? "w-72" : "w-12"} border-l border-slate-200/80 bg-white transition-all duration-300 shrink-0 overflow-hidden flex flex-col`}>
+                {isAiSidebarOpen && (
+                    <button
+                        type="button"
+                        aria-label="Close Copilot"
+                        className="md:hidden fixed inset-0 z-30 bg-slate-900/30"
+                        onClick={() => setIsAiSidebarOpen(false)}
+                    />
+                )}
+                <aside className={`${isAiSidebarOpen ? "w-80 max-md:fixed max-md:inset-y-0 max-md:right-0 max-md:z-40 max-md:shadow-xl" : "w-12"} border-l border-slate-200/80 bg-white transition-all duration-300 shrink-0 overflow-hidden flex flex-col`}>
                     {isAiSidebarOpen ? (
-                        <div className="w-72 h-full flex flex-col">
-                            <div className="px-4 py-3.5 border-b border-slate-200/80 text-[#6F155F] font-semibold text-sm flex items-center justify-between bg-white">
-                                <div className="flex items-center gap-2"><Sparkles className="h-4 w-4" /> Academic AI Copilot</div>
-                                <button type="button" onClick={() => setIsAiSidebarOpen(false)} className="p-1.5 text-slate-400 hover:text-[#6F155F] hover:bg-[#F2EBF1] rounded-md transition-colors"><PanelRightClose className="h-4 w-4" /></button>
-                            </div>
-                            <div className="flex-1 p-4 overflow-y-auto bg-[#F8F6F9] space-y-3">
-                                <div className="rounded-md border border-slate-200/80 bg-white px-2.5 py-2 text-[11px] text-slate-500">
-                                    Target section:{" "}
+                        <div className="w-80 h-full flex flex-col">
+                            <div className="px-3 py-2.5 border-b border-slate-200/80 bg-white shrink-0">
+                                <div className="flex items-center justify-between gap-2 text-[#6F155F] font-semibold text-sm">
+                                    <div className="flex items-center gap-1.5 min-w-0">
+                                        <Sparkles className="h-4 w-4 shrink-0" />
+                                        <span className="truncate">Academic AI Copilot</span>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => setIsAiSidebarOpen(false)}
+                                        className="p-1.5 text-slate-400 hover:text-[#6F155F] hover:bg-[#F2EBF1] rounded-md transition-colors shrink-0"
+                                    >
+                                        <PanelRightClose className="h-4 w-4" />
+                                    </button>
+                                </div>
+                                <p className="mt-1 text-[10px] text-slate-500 truncate" title={activeItem.title || "Select a heading"}>
+                                    Target:{" "}
                                     <span className="font-medium text-slate-700">
                                         {activeItem.title || "Select a heading"}
                                     </span>
-                                </div>
-
-                                <div className="rounded-md border border-slate-200/80 bg-white p-2.5 space-y-2">
-                                    <div className="flex items-center justify-between gap-2">
-                                        <div className="text-[10px] uppercase tracking-wider text-slate-400 font-medium">
-                                            Project AI Profile
-                                        </div>
-                                        {!isEditingAiProfile && (
-                                            <button
-                                                type="button"
-                                                onClick={beginEditAiProfile}
-                                                className="text-[11px] text-[#6F155F] hover:underline"
-                                            >
-                                                {isAiProfileEmpty(aiProfile) ? "Set up profile" : "Edit Profile"}
-                                            </button>
-                                        )}
-                                    </div>
-                                    {isEditingAiProfile ? (
-                                        <div className="space-y-2">
-                                            {AI_PROFILE_FIELDS.map((field) => (
-                                                <label key={field.key} className="block space-y-1">
-                                                    <span className="text-[11px] font-medium text-slate-600">
-                                                        {field.label}
-                                                    </span>
-                                                    {field.rows && field.rows > 1 ? (
-                                                        <textarea
-                                                            rows={field.rows}
-                                                            value={aiProfileDraft[field.key]}
-                                                            onChange={(e) =>
-                                                                setAiProfileDraft((prev) => ({
-                                                                    ...prev,
-                                                                    [field.key]: e.target.value,
-                                                                }))
-                                                            }
-                                                            placeholder={field.placeholder}
-                                                            className="w-full text-xs border border-slate-200 rounded-md p-2 focus:outline-none focus:ring-1 focus:ring-[#6F155F]/40 focus:border-[#6F155F]/40 resize-y min-h-[2.5rem]"
-                                                        />
-                                                    ) : (
-                                                        <input
-                                                            type="text"
-                                                            value={aiProfileDraft[field.key]}
-                                                            onChange={(e) =>
-                                                                setAiProfileDraft((prev) => ({
-                                                                    ...prev,
-                                                                    [field.key]: e.target.value,
-                                                                }))
-                                                            }
-                                                            placeholder={field.placeholder}
-                                                            className="w-full text-xs border border-slate-200 rounded-md p-2 focus:outline-none focus:ring-1 focus:ring-[#6F155F]/40 focus:border-[#6F155F]/40"
-                                                        />
-                                                    )}
-                                                </label>
-                                            ))}
-                                            <div className="flex gap-2 pt-1">
-                                                <button
-                                                    type="button"
-                                                    onClick={() => void handleSaveAiProfile()}
-                                                    disabled={isSavingAiProfile}
-                                                    className="flex-1 text-xs bg-[#6F155F] text-white px-2.5 py-2 rounded-md hover:bg-[#5a114d] disabled:opacity-50"
-                                                >
-                                                    {isSavingAiProfile ? "Saving…" : "Save Profile"}
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={cancelEditAiProfile}
-                                                    disabled={isSavingAiProfile}
-                                                    className="text-xs border border-slate-200 px-2.5 py-2 rounded-md text-slate-600 hover:bg-slate-50 disabled:opacity-50"
-                                                >
-                                                    Cancel
-                                                </button>
+                                </p>
+                            </div>
+                            <div className="flex-1 p-3 overflow-y-auto bg-[#F8F6F9] space-y-2.5">
+                                <div className="rounded-lg border border-slate-200/80 bg-white overflow-hidden">
+                                    <button
+                                        type="button"
+                                        onClick={() => setIsProjectContextOpen((open) => !open)}
+                                        className="w-full flex items-start gap-2 px-2.5 py-2 text-left hover:bg-[#F2EBF1]/60 transition-colors"
+                                        aria-expanded={isProjectContextOpen || isEditingAiProfile}
+                                    >
+                                        <div className="min-w-0 flex-1">
+                                            <div className="text-[10px] uppercase tracking-wider text-slate-400 font-medium">
+                                                Project Context
                                             </div>
-                                        </div>
-                                    ) : isAiProfileEmpty(aiProfile) ? (
-                                        <p className="text-[11px] text-slate-500 leading-relaxed">
-                                            No profile yet. Add basic project facts so the AI does not guess when generating content.
-                                        </p>
-                                    ) : (
-                                        <div className="space-y-1.5 max-h-40 overflow-y-auto">
-                                            {AI_PROFILE_FIELDS.filter((f) => aiProfile[f.key].trim()).map((field) => (
-                                                <div key={field.key} className="text-[11px] text-slate-600">
-                                                    <span className="font-medium text-slate-700">{field.label}: </span>
-                                                    <span className="whitespace-pre-wrap">
-                                                        {aiProfile[field.key].length > 120
-                                                            ? `${aiProfile[field.key].slice(0, 120).trim()}…`
-                                                            : aiProfile[field.key]}
-                                                    </span>
+                                            {!(isProjectContextOpen || isEditingAiProfile) && (
+                                                <div className="mt-0.5 space-y-0.5">
+                                                    <div className="text-[11px] text-slate-700 truncate font-medium">
+                                                        {aiProfileSummaryTitle}
+                                                    </div>
+                                                    <div
+                                                        className={`text-[10px] font-medium ${
+                                                            aiProfileComplete ? "text-emerald-700" : "text-amber-700"
+                                                        }`}
+                                                    >
+                                                        {aiProfileComplete
+                                                            ? "Profile complete ✓"
+                                                            : "Profile incomplete"}
+                                                    </div>
                                                 </div>
-                                            ))}
+                                            )}
+                                        </div>
+                                    </button>
+                                    {(isProjectContextOpen || isEditingAiProfile) && (
+                                        <div className="border-t border-slate-200/80 p-2.5 space-y-2 bg-[#F8F6F9]/50">
+                                            <div className="flex items-center justify-between gap-2">
+                                                <div
+                                                    className={`text-[10px] font-medium ${
+                                                        aiProfileComplete ? "text-emerald-700" : "text-amber-700"
+                                                    }`}
+                                                >
+                                                    {aiProfileComplete
+                                                        ? "Profile complete ✓"
+                                                        : "Profile incomplete"}
+                                                </div>
+                                                {!isEditingAiProfile && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={beginEditAiProfile}
+                                                        className="text-[11px] text-[#6F155F] hover:underline"
+                                                    >
+                                                        {isAiProfileEmpty(aiProfile) ? "Set up" : "Edit"}
+                                                    </button>
+                                                )}
+                                            </div>
+                                            {isEditingAiProfile ? (
+                                                <div className="space-y-2">
+                                                    {AI_PROFILE_FIELDS.map((field) => (
+                                                        <label key={field.key} className="block space-y-1">
+                                                            <span className="text-[11px] font-medium text-slate-600">
+                                                                {field.label}
+                                                            </span>
+                                                            {field.rows && field.rows > 1 ? (
+                                                                <textarea
+                                                                    rows={field.rows}
+                                                                    value={aiProfileDraft[field.key]}
+                                                                    onChange={(e) =>
+                                                                        setAiProfileDraft((prev) => ({
+                                                                            ...prev,
+                                                                            [field.key]: e.target.value,
+                                                                        }))
+                                                                    }
+                                                                    placeholder={field.placeholder}
+                                                                    className="w-full text-xs border border-slate-200 rounded-md p-2 focus:outline-none focus:ring-1 focus:ring-[#6F155F]/40 focus:border-[#6F155F]/40 resize-y min-h-[2.5rem] bg-white"
+                                                                />
+                                                            ) : (
+                                                                <input
+                                                                    type="text"
+                                                                    value={aiProfileDraft[field.key]}
+                                                                    onChange={(e) =>
+                                                                        setAiProfileDraft((prev) => ({
+                                                                            ...prev,
+                                                                            [field.key]: e.target.value,
+                                                                        }))
+                                                                    }
+                                                                    placeholder={field.placeholder}
+                                                                    className="w-full text-xs border border-slate-200 rounded-md p-2 focus:outline-none focus:ring-1 focus:ring-[#6F155F]/40 focus:border-[#6F155F]/40 bg-white"
+                                                                />
+                                                            )}
+                                                        </label>
+                                                    ))}
+                                                    <div className="flex gap-2 pt-1">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => void handleSaveAiProfile()}
+                                                            disabled={isSavingAiProfile}
+                                                            className="flex-1 text-xs bg-[#6F155F] text-white px-2.5 py-2 rounded-md hover:bg-[#5a114d] disabled:opacity-50"
+                                                        >
+                                                            {isSavingAiProfile ? "Saving…" : "Save Profile"}
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={cancelEditAiProfile}
+                                                            disabled={isSavingAiProfile}
+                                                            className="text-xs border border-slate-200 px-2.5 py-2 rounded-md text-slate-600 hover:bg-white disabled:opacity-50 bg-white"
+                                                        >
+                                                            Cancel
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            ) : isAiProfileEmpty(aiProfile) ? (
+                                                <p className="text-[11px] text-slate-500 leading-relaxed">
+                                                    No profile yet. Add project facts so the AI stays accurate.
+                                                </p>
+                                            ) : (
+                                                <div className="space-y-1.5 max-h-40 overflow-y-auto">
+                                                    {AI_PROFILE_FIELDS.filter((f) => aiProfile[f.key].trim()).map((field) => (
+                                                        <div key={field.key} className="text-[11px] text-slate-600">
+                                                            <span className="font-medium text-slate-700">{field.label}: </span>
+                                                            <span className="whitespace-pre-wrap">
+                                                                {aiProfile[field.key].length > 120
+                                                                    ? `${aiProfile[field.key].slice(0, 120).trim()}…`
+                                                                    : aiProfile[field.key]}
+                                                            </span>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
                                         </div>
                                     )}
                                 </div>
 
-                                <button
-                                    type="button"
-                                    onClick={handleAiGenerate}
-                                    disabled={isAiGenerating || isSaving || isSavingAiProfile || !activeItem.id}
-                                    className="w-full text-left text-xs bg-white border border-slate-200 hover:border-[#6F155F]/40 hover:text-[#6F155F] p-2.5 rounded-md transition-colors disabled:opacity-50"
-                                >
-                                    {isAiGenerating ? "Generating…" : "Generate content"}
-                                </button>
-                                <div className="grid grid-cols-1 gap-2 opacity-50 pointer-events-none" title="Coming in a later phase">
-                                    {["Expand Details", "Refine Grammar", "Academic Tone"].map((prompt) => (
-                                        <button key={prompt} type="button" className="text-left text-xs bg-white border border-slate-200 p-2.5 rounded-md">
-                                            {prompt}
+                                <div className="rounded-lg border border-slate-200/80 bg-white p-2 space-y-1.5">
+                                    <div className="text-[10px] uppercase tracking-wider text-slate-400 font-medium px-0.5">
+                                        AI Actions
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-1">
+                                        <button
+                                            type="button"
+                                            onClick={handleAiGenerate}
+                                            disabled={isAiGenerating || isSaving || isSavingAiProfile || !activeItem.id}
+                                            className="col-span-2 text-[11px] font-medium bg-[#6F155F] text-white hover:bg-[#5a114d] px-2 py-1.5 rounded-md transition-colors disabled:opacity-50"
+                                        >
+                                            {isAiGenerating
+                                                ? aiClarificationQuestion
+                                                    ? "Checking…"
+                                                    : "Generating…"
+                                                : aiClarificationQuestion
+                                                  ? "Answer below to continue"
+                                                  : "Generate"}
                                         </button>
-                                    ))}
+                                        <button
+                                            type="button"
+                                            onClick={() => void handleAiImprove("improve")}
+                                            disabled={!canRunAiRefine}
+                                            className="text-[11px] bg-slate-50/80 border border-slate-200 hover:border-[#6F155F]/40 hover:text-[#6F155F] hover:bg-white px-2 py-1.5 rounded-md transition-colors disabled:opacity-45"
+                                            title="Improve current draft or section text"
+                                        >
+                                            Improve
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() =>
+                                                void handleAiImprove(
+                                                    "improve",
+                                                    "Expand with more detail and depth while preserving all stated facts."
+                                                )
+                                            }
+                                            disabled={!canRunAiRefine}
+                                            className="text-[11px] bg-slate-50/80 border border-slate-200 hover:border-[#6F155F]/40 hover:text-[#6F155F] hover:bg-white px-2 py-1.5 rounded-md transition-colors disabled:opacity-45"
+                                            title="Expand current draft or section text"
+                                        >
+                                            Expand
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => void handleAiImprove("grammar")}
+                                            disabled={!canRunAiRefine}
+                                            className="text-[11px] bg-slate-50/80 border border-slate-200 hover:border-[#6F155F]/40 hover:text-[#6F155F] hover:bg-white px-2 py-1.5 rounded-md transition-colors disabled:opacity-45"
+                                        >
+                                            Grammar
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => void handleAiImprove("tone")}
+                                            disabled={!canRunAiRefine}
+                                            className="text-[11px] bg-slate-50/80 border border-slate-200 hover:border-[#6F155F]/40 hover:text-[#6F155F] hover:bg-white px-2 py-1.5 rounded-md transition-colors disabled:opacity-45"
+                                        >
+                                            Academic Tone
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => void handleAiImprove("refine")}
+                                            disabled={!canRunAiRefine}
+                                            className="text-[11px] bg-slate-50/80 border border-slate-200 hover:border-[#6F155F]/40 hover:text-[#6F155F] hover:bg-white px-1.5 py-1.5 rounded-md transition-colors disabled:opacity-45"
+                                        >
+                                            Refine
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => void handleAiImprove("humanize")}
+                                            disabled={!canRunAiRefine}
+                                            title="Make writing sound natural while preserving facts and academic tone"
+                                            className="text-[11px] bg-slate-50/80 border border-slate-200 hover:border-[#6F155F]/40 hover:text-[#6F155F] hover:bg-white px-1.5 py-1.5 rounded-md transition-colors disabled:opacity-45"
+                                        >
+                                            Humanize
+                                        </button>                                    </div>
                                 </div>
+
+                                {/* FYP Diagrams — slate/teal workspace (separate from writing tools) */}
+                                <div className="rounded-lg border border-teal-700/25 bg-gradient-to-b from-slate-50 to-teal-50/40 overflow-hidden">
+                                    <button
+                                        type="button"
+                                        onClick={() => setIsFypDiagramsOpen((open) => !open)}
+                                        className="w-full flex items-center justify-between gap-2 px-2.5 py-2 text-left hover:bg-teal-50/60 transition-colors"
+                                        aria-expanded={isFypDiagramsOpen}
+                                    >
+                                        <div className="text-[11px] font-semibold text-teal-900 truncate">
+                                            FYP Diagrams · {fypDiagramsReadyCount} of 5 ready
+                                        </div>
+                                        <span className="text-[10px] text-teal-800/60 shrink-0">
+                                            {isFypDiagramsOpen ? "Hide" : "Show"}
+                                        </span>
+                                    </button>
+
+                                    {isFypDiagramsOpen && (
+                                        <div className="border-t border-teal-700/15 px-2 pb-2.5 pt-2 space-y-2">
+                                            <div className="space-y-0.5">
+                                                {fypDiagramRows.map((row) => {
+                                                    const selected = selectedDiagramKind === row.entry.kind;
+                                                    const statusClass =
+                                                        row.status === "In report"
+                                                            ? "bg-emerald-100 text-emerald-800"
+                                                            : row.status === "Preview"
+                                                              ? "bg-sky-100 text-sky-800"
+                                                              : row.status === "Needs details"
+                                                                ? "bg-amber-100 text-amber-800"
+                                                                : "bg-slate-200/80 text-slate-600";
+                                                    return (
+                                                        <button
+                                                            key={row.entry.kind}
+                                                            type="button"
+                                                            onClick={() => openDiagramRow(row.entry.kind)}
+                                                            className={`w-full rounded-md px-2 py-1.5 flex items-center gap-2 text-left transition-colors ${
+                                                                selected
+                                                                    ? "bg-white border border-teal-600/35 shadow-sm"
+                                                                    : "border border-transparent hover:bg-white/80"
+                                                            }`}
+                                                        >
+                                                            <span className="min-w-0 flex-1 text-[11px] font-medium text-slate-800 truncate">
+                                                                {row.entry.label}
+                                                            </span>
+                                                            <span
+                                                                className={`shrink-0 text-[9px] font-medium px-1.5 py-0.5 rounded ${statusClass}`}
+                                                            >
+                                                                {row.status}
+                                                            </span>
+                                                        </button>
+                                                    );
+                                                })}
+                                            </div>
+
+                                            {selectedDiagramRow && (() => {
+                                                const kind = selectedDiagramRow.entry.kind;
+                                                const clarifying = Boolean(diagramClarifications[kind]?.question);
+                                                const hasSpec = Boolean(diagramSpecs[kind]);
+                                                const insertImage = resolveSelectedDiagramImage();
+                                                const canInsert =
+                                                    Boolean(insertImage?.dataUrl) && Boolean(selectedDiagramRow.section);
+                                                const insertLabel =
+                                                    selectedDiagramRow.figures.length > 0 ? "Replace in report" : "Insert";
+                                                const hasPreviewVisual =
+                                                    (hasSpec && !isEditingDiagramSpec) ||
+                                                    Boolean(selectedDiagramDisplay) ||
+                                                    Boolean(
+                                                        diagramRenderExport?.kind === kind &&
+                                                            (diagramRenderExport.pngDataUrl || diagramRenderExport.svg)
+                                                    );
+
+                                                return (
+                                                    <div className="rounded-md border border-teal-700/20 bg-white p-2 space-y-2">
+                                                        <div className="flex items-start justify-between gap-2">
+                                                            <div className="min-w-0">
+                                                                <div className="text-[11px] font-semibold text-teal-900 truncate">
+                                                                    {selectedDiagramRow.entry.label}
+                                                                </div>
+                                                                <div className="text-[10px] text-slate-500 truncate">
+                                                                    {selectedDiagramRow.section
+                                                                        ? formatHeadingLabel(selectedDiagramRow.section)
+                                                                        : selectedDiagramRow.entry.sectionId}
+                                                                </div>
+                                                            </div>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => setSelectedDiagramKind(null)}
+                                                                className="text-[10px] text-slate-400 hover:text-slate-600"
+                                                            >
+                                                                Close
+                                                            </button>
+                                                        </div>
+
+                                                        {diagramNotice && (
+                                                            <div className="rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1.5 text-[11px] text-emerald-700">
+                                                                {diagramNotice}
+                                                            </div>
+                                                        )}
+
+                                                        {diagramSpecError && (
+                                                            <div className="rounded-md border border-red-200 bg-red-50 px-2 py-1.5 text-[11px] text-red-600">
+                                                                {diagramSpecError}
+                                                            </div>
+                                                        )}
+
+                                                        {clarifying ? (
+                                                            <div className="space-y-1.5">
+                                                                <div className="text-[11px] text-slate-700 whitespace-pre-wrap">
+                                                                    {diagramClarifications[kind]!.question}
+                                                                </div>
+                                                                <input
+                                                                    className="w-full text-[11px] border border-amber-200 rounded-md px-2 py-1.5 bg-amber-50/50"
+                                                                    placeholder="Short answer…"
+                                                                    value={diagramClarifyInput}
+                                                                    onChange={(e) => setDiagramClarifyInput(e.target.value)}
+                                                                    disabled={isDiagramWorking}
+                                                                    onKeyDown={(e) => {
+                                                                        if (e.key === "Enter" && !e.shiftKey) {
+                                                                            e.preventDefault();
+                                                                            void handleDiagramGenerate();
+                                                                        }
+                                                                    }}
+                                                                />
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => void handleDiagramGenerate()}
+                                                                    disabled={
+                                                                        isDiagramWorking ||
+                                                                        isSaving ||
+                                                                        !diagramClarifyInput.trim()
+                                                                    }
+                                                                    className="w-full text-[11px] font-medium bg-teal-800 text-white hover:bg-teal-900 py-2 rounded-md disabled:opacity-40"
+                                                                >
+                                                                    {isDiagramWorking ? "Working…" : "Continue"}
+                                                                </button>
+                                                            </div>
+                                                        ) : isEditingDiagramSpec && diagramSpecDraft ? (
+                                                            <div className="space-y-2">
+                                                                <div className="max-h-52 overflow-y-auto pr-0.5">
+                                                                    <FypDiagramSpecEditor
+                                                                        spec={diagramSpecDraft}
+                                                                        onChange={setDiagramSpecDraft}
+                                                                    />
+                                                                </div>
+                                                                <div className="flex gap-1">
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => void saveEditedDiagramSpec()}
+                                                                        className="flex-1 text-[11px] font-medium bg-teal-800 text-white py-2 rounded-md"
+                                                                    >
+                                                                        Save spec
+                                                                    </button>
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => {
+                                                                            setIsEditingDiagramSpec(false);
+                                                                            setDiagramSpecDraft(null);
+                                                                            setDiagramSpecError(null);
+                                                                        }}
+                                                                        className="text-[11px] border border-slate-200 px-3 py-2 rounded-md"
+                                                                    >
+                                                                        Cancel
+                                                                    </button>
+                                                                </div>
+                                                            </div>
+                                                        ) : (
+                                                            <>
+                                                                <div className="rounded-md bg-slate-50/90 min-h-[6.5rem] flex items-center justify-center overflow-hidden">
+                                                                    {hasSpec ? (
+                                                                        <FypDiagramPreview
+                                                                            key={`${kind}-${diagramRenderKey}`}
+                                                                            spec={diagramSpecs[kind]!}
+                                                                            renderKey={diagramRenderKey}
+                                                                            onRendered={({ svg, pngDataUrl }) => {
+                                                                                setDiagramRenderExport((prev) => {
+                                                                                    if (
+                                                                                        prev?.kind === kind &&
+                                                                                        prev.svg === svg &&
+                                                                                        prev.pngDataUrl === pngDataUrl
+                                                                                    ) {
+                                                                                        return prev;
+                                                                                    }
+                                                                                    return { kind, svg, pngDataUrl };
+                                                                                });
+                                                                            }}
+                                                                            onError={(message) => setDiagramSpecError(message)}
+                                                                        />
+                                                                    ) : selectedDiagramDisplay ? (
+                                                                        // eslint-disable-next-line @next/next/no-img-element
+                                                                        <img
+                                                                            src={selectedDiagramDisplay}
+                                                                            alt={`${selectedDiagramRow.entry.label} preview`}
+                                                                            className="max-h-36 max-w-full object-contain"
+                                                                        />
+                                                                    ) : (
+                                                                        <span className="text-[10px] text-slate-400 px-3 text-center">
+                                                                            Generate or upload to preview
+                                                                        </span>
+                                                                    )}
+                                                                </div>
+
+                                                                {canInsert && (
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={handleDiagramInsert}
+                                                                        className="w-full text-[11px] font-semibold bg-teal-800 text-white hover:bg-teal-900 py-2 rounded-md"
+                                                                    >
+                                                                        {insertLabel}
+                                                                    </button>
+                                                                )}
+
+                                                                <div className="flex flex-wrap gap-x-2 gap-y-1 text-[10px]">
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => void handleDiagramGenerate()}
+                                                                        disabled={isDiagramWorking || isSaving || isSavingAiProfile}
+                                                                        className="text-teal-800 hover:underline disabled:opacity-40"
+                                                                    >
+                                                                        {isDiagramWorking ? "Working…" : hasSpec ? "Regenerate spec" : "Generate"}
+                                                                    </button>
+                                                                    {hasSpec && (
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={handleDiagramRegeneratePreview}
+                                                                            disabled={isDiagramWorking}
+                                                                            className="text-teal-800 hover:underline disabled:opacity-40"
+                                                                        >
+                                                                            Refresh preview
+                                                                        </button>
+                                                                    )}
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={beginEditDiagramSpec}
+                                                                        disabled={isDiagramWorking}
+                                                                        className="text-slate-600 hover:underline disabled:opacity-40"
+                                                                    >
+                                                                        Edit spec
+                                                                    </button>
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => diagramUploadInputRef.current?.click()}
+                                                                        className="text-slate-600 hover:underline"
+                                                                    >
+                                                                        Upload
+                                                                    </button>
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={handleDiagramDownload}
+                                                                        disabled={!hasPreviewVisual && !selectedDiagramDisplay}
+                                                                        className="text-slate-600 hover:underline disabled:opacity-40"
+                                                                    >
+                                                                        Download
+                                                                    </button>
+                                                                    {selectedDiagramRow.figures.length > 0 && (
+                                                                        <>
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={() => diagramReplaceInputRef.current?.click()}
+                                                                                className="text-amber-800 hover:underline"
+                                                                            >
+                                                                                Replace file
+                                                                            </button>
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={handleDiagramDelete}
+                                                                                className="text-red-700 hover:underline"
+                                                                            >
+                                                                                Delete
+                                                                            </button>
+                                                                        </>
+                                                                    )}
+                                                                    {!canInsert && selectedDiagramRow.localPreview && (
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={handleDiagramDelete}
+                                                                            className="text-red-700 hover:underline"
+                                                                        >
+                                                                            Clear upload
+                                                                        </button>
+                                                                    )}
+                                                                </div>
+                                                            </>
+                                                        )}
+                                                    </div>
+                                                );
+                                            })()}
+
+                                            <input
+                                                ref={diagramUploadInputRef}
+                                                type="file"
+                                                accept="image/*"
+                                                className="hidden"
+                                                onChange={handleDiagramUploadFile}
+                                            />
+                                            <input
+                                                ref={diagramReplaceInputRef}
+                                                type="file"
+                                                accept="image/*"
+                                                className="hidden"
+                                                onChange={handleDiagramReplaceFigure}
+                                            />
+                                        </div>
+                                    )}
+                                </div>
+
                                 {aiError && (
-                                    <div className="rounded-md border border-red-200 bg-red-50 px-2.5 py-2 text-[11px] text-red-600">
+                                    <div className="rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-[11px] text-red-600">
                                         {aiError}
                                     </div>
                                 )}
-                                {aiDraft ? (
-                                    <div className="space-y-1.5">
-                                        <div className="text-[10px] uppercase tracking-wider text-slate-400">Draft (not inserted)</div>
-                                        <div className="bg-white p-3 rounded-lg border border-slate-200/80 shadow-sm text-xs text-slate-700 leading-relaxed whitespace-pre-wrap max-h-80 overflow-y-auto">
-                                            {aiDraft}
+                                {aiClarificationQuestion && (
+                                    <div className="rounded-lg border border-amber-200/90 bg-amber-50/90 px-2.5 py-2 space-y-1">
+                                        <div className="text-[10px] uppercase tracking-wider text-amber-700/80 font-medium">
+                                            Needs a detail
+                                        </div>
+                                        <div className="text-xs text-slate-700 leading-relaxed whitespace-pre-wrap">
+                                            {aiClarificationQuestion}
                                         </div>
                                     </div>
-                                ) : (
-                                    <div className="bg-white p-3.5 rounded-lg border border-slate-200/80 shadow-sm text-xs text-slate-500 leading-relaxed">
-                                        Complete the Project AI Profile, select a heading, then choose Generate content. The draft appears here — it is not inserted into the report yet.
-                                    </div>
                                 )}
+                                {aiDraft ? (
+                                    <div className="rounded-lg border-2 border-[#6F155F]/25 bg-[#F2EBF1] p-2.5 space-y-2 shadow-sm">
+                                        <div className="flex items-center justify-between gap-2">
+                                            <div className="text-[10px] uppercase tracking-wider text-[#6F155F] font-semibold">
+                                                AI Draft
+                                            </div>
+                                            {aiDraftTargetLabel && (
+                                                <div
+                                                    className="text-[10px] text-slate-600 truncate max-w-[9rem]"
+                                                    title={aiDraftTargetLabel}
+                                                >
+                                                    {aiDraftTargetLabel}
+                                                </div>
+                                            )}
+                                        </div>
+                                        <div className="bg-white/90 p-2.5 rounded-md border border-[#6F155F]/10 text-xs text-slate-700 leading-relaxed whitespace-pre-wrap max-h-64 overflow-y-auto">
+                                            {aiDraft}
+                                        </div>
+                                        {aiInsertNotice && (
+                                            <div className="rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-2 text-[11px] text-emerald-700">
+                                                {aiInsertNotice}
+                                            </div>
+                                        )}
+                                        <div className="grid grid-cols-2 gap-1.5">
+                                            <button
+                                                type="button"
+                                                onClick={handleAiInsert}
+                                                disabled={
+                                                    isAiGenerating ||
+                                                    isSaving ||
+                                                    isSavingAiProfile ||
+                                                    !aiDraftSectionId ||
+                                                    !isUsableAiDraft(aiDraft, EMPTY_AI_PROFILE_MESSAGE) ||
+                                                    Boolean(aiClarificationQuestion)
+                                                }
+                                                className="text-xs bg-[#6F155F] text-white hover:bg-[#5a114d] py-2 rounded-md transition-colors disabled:opacity-50"
+                                                title="Append draft without removing existing content"
+                                            >
+                                                Insert
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={handleAiReplace}
+                                                disabled={
+                                                    isAiGenerating ||
+                                                    isSaving ||
+                                                    isSavingAiProfile ||
+                                                    !aiDraftSectionId ||
+                                                    !isUsableAiDraft(aiDraft, EMPTY_AI_PROFILE_MESSAGE) ||
+                                                    Boolean(aiClarificationQuestion)
+                                                }
+                                                className="text-xs border border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100 py-2 rounded-md transition-colors disabled:opacity-50"
+                                                title="Replace paragraph text only; lists, tables, and figures stay"
+                                            >
+                                                Replace
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => void handleAiGenerate()}
+                                                disabled={
+                                                    isAiGenerating ||
+                                                    isSaving ||
+                                                    isSavingAiProfile ||
+                                                    !activeItem.id ||
+                                                    Boolean(aiClarificationQuestion)
+                                                }
+                                                className="text-xs border border-slate-200 bg-white hover:border-[#6F155F]/40 hover:text-[#6F155F] py-2 rounded-md transition-colors disabled:opacity-50"
+                                            >
+                                                Regenerate
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={handleAiCancelDraft}
+                                                disabled={isAiGenerating}
+                                                className="text-xs border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 py-2 rounded-md transition-colors disabled:opacity-50"
+                                            >
+                                                Cancel
+                                            </button>
+                                        </div>
+                                    </div>
+                                ) : null}
                             </div>
-                            <div className="p-3 border-t border-slate-200/80 bg-white">
+                            <div className="p-2 border-t border-slate-200/80 bg-white shrink-0">
                                 <div className="relative">
                                     <input
-                                        className="w-full text-xs border border-slate-200 rounded-lg p-2.5 pr-9 focus:outline-none focus:ring-1 focus:ring-[#6F155F]/40 focus:border-[#6F155F]/40"
-                                        placeholder="Optional instruction…"
+                                        className="w-full text-xs border border-slate-200 rounded-md py-2 pl-2.5 pr-8 focus:outline-none focus:ring-1 focus:ring-[#6F155F]/40 focus:border-[#6F155F]/40"
+                                        placeholder={
+                                            aiClarificationQuestion
+                                                ? "Answer the question…"
+                                                : "Optional instruction…"
+                                        }
                                         value={aiMessage}
                                         onChange={(e) => setAiMessage(e.target.value)}
                                         onKeyDown={(e) => {
@@ -2354,14 +3635,18 @@ export default function EditorPage() {
                                     <button
                                         type="button"
                                         onClick={() => void handleAiGenerate()}
-                                        disabled={isAiGenerating || !activeItem.id}
-                                        className="absolute right-2.5 top-2.5 text-[#6F155F] disabled:opacity-40"
-                                        title="Generate"
+                                        disabled={
+                                            isAiGenerating ||
+                                            !activeItem.id ||
+                                            (Boolean(aiClarificationQuestion) && !aiMessage.trim())
+                                        }
+                                        className="absolute right-2 top-1/2 -translate-y-1/2 text-[#6F155F] disabled:opacity-40"
+                                        title={aiClarificationQuestion ? "Send answer" : "Generate"}
                                     >
                                         {isAiGenerating ? (
-                                            <Loader2 className="h-4 w-4 animate-spin" />
+                                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
                                         ) : (
-                                            <Send className="h-4 w-4" />
+                                            <Send className="h-3.5 w-3.5" />
                                         )}
                                     </button>
                                 </div>

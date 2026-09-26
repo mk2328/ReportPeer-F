@@ -3,12 +3,78 @@
 @tailwind utilities;
 
 :root {
-  --foreground-rgb: 0, 0, 0;
-  --background-start-rgb: 214, 219, 220;
-  --background-end-rgb: 255, 255, 255;
+  --rp-brand: #6f155f;
+  --rp-brand-deep: #4f0f44;
+  --rp-brand-soft: #f4ebf2;
+  --rp-accent: #c9922e;
+  --rp-ink: #1c1520;
+  --rp-muted: #5f5666;
+  --rp-line: #e8e0ea;
+  --rp-canvas: #fbf8fa;
+  --rp-surface: #ffffff;
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Source Serif 4", ui-serif, Georgia, serif;
+}
+
+html,
+body {
+  min-height: 100%;
 }
 
 body {
-  color: rgb(var(--foreground-rgb));
-  background: rgb(var(--background-end-rgb));
+  color: var(--rp-ink);
+  background: var(--rp-canvas);
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+.font-sans {
+  font-family: var(--font-sans);
+}
+
+@keyframes rp-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes rp-soft-glow {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.7;
+    transform: scale(1.04);
+  }
+}
+
+.rp-fade-up {
+  animation: rp-fade-up 0.7s ease-out both;
+}
+
+.rp-fade-up-delay {
+  animation: rp-fade-up 0.8s ease-out 0.12s both;
+}
+
+.rp-fade-up-delay-2 {
+  animation: rp-fade-up 0.85s ease-out 0.22s both;
+}
+
+.rp-glow {
+  animation: rp-soft-glow 8s ease-in-out infinite;
+}
+
+/* Prevent Clerk widgets from causing horizontal overflow on mobile */
+.cl-rootBox,
+.cl-card {
+  max-width: 100% !important;
 }

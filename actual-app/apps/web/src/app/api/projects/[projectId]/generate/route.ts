@@ -78,7 +78,6 @@ export async function POST(
           approvalDate: project.approvalDate || project.submissionMonthYear,
           teamMembers: project.teamMembers || [],
           students: project.teamMembers || [],
-          university: project.university || "JUW",
           universityName: project.universityName,
           faculty: project.faculty,
           city: project.city,

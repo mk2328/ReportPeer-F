@@ -22,6 +22,9 @@ export interface IReport extends Document {
   internalExaminer?: string;
   externalExaminer?: string;
   headOfDepartment?: string;
+  internalExaminerDesignation?: string;
+  externalExaminerDesignation?: string;
+  externalExaminerOrganization?: string;
   universityLogo?: {
     dataUrl?: string;
     fileName?: string;
@@ -48,10 +51,12 @@ export interface IReport extends Document {
     projectType?: string;
     additionalContext?: string;
   };
+  /** Optional FYP DiagramSpecs keyed by diagram kind (architecture|erd|flow|usecase|activity). */
+  diagramSpecs?: Record<string, unknown>;
   appendices: {
     abbreviations: { term: string; definition: string }[];
   };
-  status: 'draft' | 'completed';
+  status: 'draft' | 'completed' | 'In progress';
   createdAt: Date;
   updatedAt: Date;
 }
@@ -96,6 +101,7 @@ const ReportSchema = new Schema<IReport>(
 
     references: { type: Schema.Types.Mixed, default: [] },
     aiProfile: { type: Schema.Types.Mixed, default: undefined },
+    diagramSpecs: { type: Schema.Types.Mixed, default: undefined },
     appendices: {
       abbreviations: [
         {
@@ -104,7 +110,11 @@ const ReportSchema = new Schema<IReport>(
         },
       ],
     },
-    status: { type: String, enum: ['draft', 'completed'], default: 'draft' },
+    status: {
+      type: String,
+      enum: ['draft', 'completed', 'In progress'],
+      default: 'draft',
+    },
   },
   { timestamps: true, minimize: false }
 );

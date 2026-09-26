@@ -1,56 +1,97 @@
 import { SignUp } from "@clerk/nextjs";
+import { auth } from "@clerk/nextjs/server";
+import { redirect } from "next/navigation";
+import Link from "next/link";
 import { BookOpenText } from "lucide-react";
 
+const clerkAppearance = {
+  variables: {
+    colorPrimary: "#6F155F",
+    colorText: "#1c1520",
+    colorTextSecondary: "#5f5666",
+    colorBackground: "#ffffff",
+    colorInputBackground: "#ffffff",
+    colorInputText: "#1c1520",
+    borderRadius: "0.75rem",
+    fontFamily: "var(--font-sans)",
+  },
+  elements: {
+    rootBox: "w-full max-w-[420px] mx-auto",
+    card: "shadow-none border border-[var(--rp-line)] rounded-2xl bg-white",
+    headerTitle: "font-display text-[var(--rp-ink)]",
+    headerSubtitle: "text-[var(--rp-muted)]",
+    socialButtonsBlockButton:
+      "border border-[var(--rp-line)] hover:bg-[var(--rp-brand-soft)] transition",
+    formButtonPrimary:
+      "bg-[var(--rp-brand)] hover:bg-[var(--rp-brand-deep)] shadow-none",
+    footerActionLink: "text-[var(--rp-brand)] hover:text-[var(--rp-brand-deep)]",
+  },
+} as const;
+
 export default function SignUpPage() {
+  const { userId } = auth();
+  if (userId) {
+    redirect("/dashboard");
+  }
+
   return (
-    <div className="min-h-screen grid lg:grid-cols-2 bg-white">
-      
-      {/* Left Brand Panel */}
-      <div className="hidden lg:flex flex-col justify-between p-12 bg-[#6F155F] text-white relative overflow-hidden">
-        <div className="flex items-center gap-2">
-          <BookOpenText className="h-6 w-6 text-[#E8A93B]" />
-          <span className="font-semibold text-xl tracking-tight">ReportPeer AI</span>
-        </div>
-        
-        <div className="relative z-10 max-w-xl">
-          <h1 className="text-5xl font-bold leading-[1.1] tracking-tight">
-            Write your FYP report.<br />
-            <span className="text-[#E8A93B] inline-block whitespace-nowrap mt-1">
-              Formatted perfectly.
-            </span>
+    <div className="min-h-screen overflow-x-hidden bg-[var(--rp-canvas)] lg:grid lg:grid-cols-2">
+      <div className="relative hidden overflow-hidden bg-[var(--rp-brand)] text-white lg:flex lg:flex-col lg:justify-between lg:p-12">
+        <div className="absolute -bottom-28 -right-20 h-80 w-80 rounded-full bg-[var(--rp-accent)]/20 blur-3xl" />
+        <div className="absolute -left-16 top-24 h-56 w-56 rounded-full bg-white/10 blur-3xl" />
+
+        <Link href="/" className="relative z-10 flex items-center gap-2.5">
+          <span className="grid h-9 w-9 place-items-center rounded-xl bg-white/15">
+            <BookOpenText className="h-4 w-4 text-[#f3d9a4]" />
+          </span>
+          <span className="font-display text-xl font-semibold tracking-tight">
+            ReportPeer AI
+          </span>
+        </Link>
+
+        <div className="relative z-10 max-w-md">
+          <h1 className="font-display text-4xl font-semibold leading-tight tracking-tight xl:text-5xl">
+            Start your FYP report the smart way.
           </h1>
-          <p className="mt-6 text-sm text-white/80 leading-relaxed max-w-md">
-            A chapter-by-chapter editor that follows your university's official
-            Word template — captions, headings, tables, and all — while AI helps
-            you draft and polish.
+          <p className="mt-5 text-sm leading-relaxed text-white/80">
+            Create a project, fill your Project AI Profile, draft with Academic
+            AI Copilot, and export university-ready DOCX or PDF.
           </p>
         </div>
-        
-        <div className="text-xs text-white/60 tracking-wide">
-          Trusted format · JUW · NED · IBA · FAST
-        </div>
-        
-        <div className="absolute -bottom-40 -right-40 h-96 w-96 rounded-full bg-[#E8A93B]/10 blur-3xl" />
+
+        <p className="relative z-10 text-xs text-white/55">
+          Developed by Muskan Kamran
+        </p>
       </div>
 
-      {/* Right Form Workspace */}
-      <div className="flex flex-col items-center justify-center p-6 sm:p-12 bg-gray-50/50 lg:bg-white">
-        {/* Mobile Header - Visible only on small screens */}
-        <div className="lg:hidden flex items-center gap-2 mb-8 text-[#6F155F]">
-          <BookOpenText className="h-6 w-6 text-[#E8A93B]" />
-          <span className="font-bold text-xl tracking-tight">ReportPeer AI</span>
+      <div className="flex min-h-screen flex-col px-4 py-8 sm:px-8 sm:py-12">
+        <div className="mb-8 flex items-center justify-between lg:hidden">
+          <Link href="/" className="flex items-center gap-2 text-[var(--rp-brand)]">
+            <BookOpenText className="h-5 w-5" />
+            <span className="font-display text-lg font-semibold">ReportPeer AI</span>
+          </Link>
+          <Link href="/sign-in" className="text-sm font-semibold text-[var(--rp-muted)]">
+            Sign in
+          </Link>
         </div>
 
-        {/* Standard Clerk Box Wrapper */}
-        <div className="w-full flex justify-center items-center">
+        <div className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center">
+          <div className="mb-6 text-center lg:text-left">
+            <h2 className="font-display text-3xl font-semibold tracking-tight text-[var(--rp-ink)]">
+              Create account
+            </h2>
+            <p className="mt-2 text-sm text-[var(--rp-muted)]">
+              Sign up with email or Google to open your dashboard.
+            </p>
+          </div>
+
           <SignUp
-            afterSignInUrl="/dashboard"
-            afterSignUpUrl="/dashboard"
-            appearance={{
-              variables: {
-                colorPrimary: '#6F155F',
-              },
-            }}
+            routing="path"
+            path="/sign-up"
+            signInUrl="/sign-in"
+            forceRedirectUrl="/dashboard"
+            fallbackRedirectUrl="/dashboard"
+            appearance={clerkAppearance}
           />
         </div>
       </div>

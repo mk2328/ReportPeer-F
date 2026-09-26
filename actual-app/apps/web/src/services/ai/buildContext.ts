@@ -5,8 +5,10 @@
 
 import {
   cellPlainText,
+  chapterNumberFromItem,
   ensureContentBlocks,
   formatHeadingLabel,
+  stripHeadingNumber,
   type ContentBlock,
   type StructureItem,
 } from "@/lib/structureUtils";
@@ -16,6 +18,11 @@ import {
   isAiProfileEmpty,
   normalizeAiProfile,
 } from "@/services/ai/aiProfile";
+import {
+  type JuwSectionGuide,
+  formatJuwSectionGuideForPrompt,
+  resolveJuwSectionGuide,
+} from "@/services/ai/juwSectionGuide";
 
 export type AiProjectSnapshot = {
   title?: string;
@@ -34,15 +41,15 @@ function findStructureItem(items: StructureItem[] | undefined, id: string): Stru
   return null;
 }
 
-function findPathLabels(
+function findPathItems(
   items: StructureItem[] | undefined,
   id: string,
-  trail: string[] = []
-): string[] | null {
+  trail: StructureItem[] = []
+): StructureItem[] | null {
   for (const item of items || []) {
-    const next = [...trail, formatHeadingLabel(item)];
+    const next = [...trail, item];
     if (item.id === id) return next;
-    const nested = findPathLabels(item.subitems, id, next);
+    const nested = findPathItems(item.subitems, id, next);
     if (nested) return nested;
   }
   return null;
@@ -74,6 +81,27 @@ function truncate(text: string, maxChars: number): string {
   return `${cleaned.slice(0, maxChars).trim()}…\n(truncated)`;
 }
 
+function buildGuideForItem(item: StructureItem, path: StructureItem[]): JuwSectionGuide {
+  const chapterItem =
+    path.find((node) => chapterNumberFromItem(node) != null) ||
+    (chapterNumberFromItem(item) != null ? item : null);
+  const chapterNumber = chapterItem ? chapterNumberFromItem(chapterItem) : null;
+  const chapterTitle = chapterItem
+    ? stripHeadingNumber(String(chapterItem.title || ""))
+        .replace(/^CHAPTER\s+\d+\s*[-–:]?\s*/i, "")
+        .trim() || String(chapterItem.title || "")
+    : null;
+  const isChapterHeading = chapterNumberFromItem(item) != null;
+
+  return resolveJuwSectionGuide({
+    sectionTitle: stripHeadingNumber(String(item.title || "")) || "Section",
+    sectionNumber: isChapterHeading ? null : item.number || null,
+    chapterNumber,
+    chapterTitle,
+    isChapterHeading,
+  });
+}
+
 export function buildGenerateContext(
   project: AiProjectSnapshot,
   sectionId: string
@@ -85,6 +113,8 @@ export function buildGenerateContext(
   aiProfile: AiProfile;
   aiProfileText: string;
   profileEmpty: boolean;
+  juwSectionGuide: JuwSectionGuide;
+  juwSectionGuideText: string;
 } {
   const item = findStructureItem(project.structure, sectionId);
   if (!item) {
@@ -99,16 +129,19 @@ export function buildGenerateContext(
     6000
   );
 
-  const path = findPathLabels(project.structure, sectionId) || [formatHeadingLabel(item)];
+  const path = findPathItems(project.structure, sectionId) || [item];
+  const juwSectionGuide = buildGuideForItem(item, path);
   const coverTitle = String(project.projectTitle || project.title || "").trim();
 
   return {
     projectTitle: aiProfile.projectTitle.trim() || coverTitle || "FYP Report",
     sectionTitle: formatHeadingLabel(item),
-    sectionPath: path.join(" > "),
+    sectionPath: path.map((node) => formatHeadingLabel(node)).join(" > "),
     existingContent,
     aiProfile,
     aiProfileText: formatAiProfileForPrompt(aiProfile),
     profileEmpty: isAiProfileEmpty(aiProfile),
+    juwSectionGuide,
+    juwSectionGuideText: formatJuwSectionGuideForPrompt(juwSectionGuide),
   };
 }

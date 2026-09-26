@@ -1,13 +1,24 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google"; 
 import { ClerkProvider } from "@clerk/nextjs";
-import "./globals.css"; // Standard relative layout import
+import { Plus_Jakarta_Sans, Source_Serif_4 } from "next/font/google";
+import "./globals.css";
 
-const inter = Inter({ subsets: ["latin"] });
+const sans = Plus_Jakarta_Sans({
+  subsets: ["latin"],
+  variable: "--font-sans",
+  display: "swap",
+});
+
+const display = Source_Serif_4({
+  subsets: ["latin"],
+  variable: "--font-display",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   title: "ReportPeer AI",
-  description: "Automated FYP Formatting Engine",
+  description:
+    "AI-assisted FYP report writing with university formatting, DOCX/PDF export, and academic content assistance.",
 };
 
 export default function RootLayout({
@@ -19,11 +30,15 @@ export default function RootLayout({
     <ClerkProvider
       signInUrl="/sign-in"
       signUpUrl="/sign-up"
-      afterSignInUrl="/dashboard"
-      afterSignUpUrl="/dashboard"
+      signInForceRedirectUrl="/dashboard"
+      signUpForceRedirectUrl="/dashboard"
+      signInFallbackRedirectUrl="/dashboard"
+      signUpFallbackRedirectUrl="/dashboard"
     >
-      <html lang="en">
-        <body className={inter.className}>{children}</body>
+      <html lang="en" className={`${sans.variable} ${display.variable}`}>
+        <body className="font-sans antialiased text-[var(--rp-ink)] bg-[var(--rp-canvas)]">
+          {children}
+        </body>
       </html>
     </ClerkProvider>
   );

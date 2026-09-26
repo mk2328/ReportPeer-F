@@ -570,3 +570,110 @@ export function applyBlocksToItem(
     contentText,
   };
 }
+
+/**
+ * Append AI draft paragraphs to existing section blocks without overwriting
+ * meaningful content. Empty trailing paragraphs may be filled first.
+ */
+export function appendAiDraftToBlocks(
+  blocks: ContentBlock[],
+  draftText: string
+): ContentBlock[] {
+  const paragraphs = draftText
+    .replace(/\r\n/g, "\n")
+    .split(/\n{2,}/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (paragraphs.length === 0) return blocks;
+
+  const newParas: Extract<ContentBlock, { type: "paragraph" }>[] = paragraphs.map(
+    (text) => ({
+      id: newId("p"),
+      type: "paragraph" as const,
+      text,
+    })
+  );
+
+  const hasMeaningfulContent = blocks.some((block) => {
+    if (block.type === "paragraph") return Boolean(block.text?.trim());
+    return true;
+  });
+
+  if (!hasMeaningfulContent) {
+    const nonParagraphs = blocks.filter((block) => block.type !== "paragraph");
+    return [...newParas, ...nonParagraphs];
+  }
+
+  const next = [...blocks];
+  const last = next[next.length - 1];
+  if (last?.type === "paragraph") {
+    if (!last.text.trim()) {
+      next[next.length - 1] = {
+        id: last.id,
+        type: "paragraph",
+        text: newParas[0].text,
+      };
+      next.push(...newParas.slice(1));
+      return next;
+    }
+  }
+
+  next.push(...newParas);
+  return next;
+}
+
+/**
+ * Replace paragraph text with an AI draft while preserving lists, tables, and figures.
+ * Extra draft paragraphs are appended; leftover old paragraphs are removed.
+ */
+export function replaceParagraphBlocksWithAiDraft(
+  blocks: ContentBlock[],
+  draftText: string
+): ContentBlock[] {
+  const paragraphs = draftText
+    .replace(/\r\n/g, "\n")
+    .split(/\n{2,}/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (paragraphs.length === 0) return blocks;
+
+  const result: ContentBlock[] = [];
+  let paraIdx = 0;
+
+  for (const block of blocks) {
+    if (block.type !== "paragraph") {
+      result.push(block);
+      continue;
+    }
+    if (paraIdx < paragraphs.length) {
+      result.push({
+        ...block,
+        text: paragraphs[paraIdx],
+      });
+      paraIdx += 1;
+    }
+    // Else drop surplus old paragraphs — non-paragraph blocks already preserved.
+  }
+
+  while (paraIdx < paragraphs.length) {
+    result.push({
+      id: newId("p"),
+      type: "paragraph",
+      text: paragraphs[paraIdx],
+    });
+    paraIdx += 1;
+  }
+
+  if (result.length === 0) {
+    result.push({ id: newId("p"), type: "paragraph", text: "" });
+  }
+
+  return result;
+}
+
+/** True when a section has at least one non-empty paragraph. */
+export function sectionHasParagraphContent(blocks: ContentBlock[]): boolean {
+  return blocks.some((block) => block.type === "paragraph" && Boolean(block.text?.trim()));
+}

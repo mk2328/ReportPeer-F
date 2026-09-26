@@ -1,10 +1,26 @@
-import { NextResponse } from 'next/server';
+import { NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
-import Report from '@/models/Report'; // Aapka Mongoose model
-import mongoose from 'mongoose';
-import { normalizeAiProfile } from '@/services/ai/aiProfile';
+import { ObjectId } from "mongodb";
+import clientPromise from "@/lib/mongodb";
+import { normalizeAiProfile } from "@/services/ai/aiProfile";
 
-export async function GET(req: Request, { params }: { params: { projectId: string } }) {
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+async function findOwnedProject(projectId: string, userId: string) {
+  if (!ObjectId.isValid(projectId)) return null;
+  const client = await clientPromise;
+  const db = client.db("reportpeer");
+  return db.collection("projects").findOne({
+    _id: new ObjectId(projectId),
+    userId,
+  });
+}
+
+export async function GET(
+  _req: Request,
+  { params }: { params: { projectId: string } }
+) {
   try {
     const { userId } = auth();
     if (!userId) {
@@ -14,14 +30,7 @@ export async function GET(req: Request, { params }: { params: { projectId: strin
     const { projectId } = params;
     console.log("Fetching Project ID:", projectId);
 
-    // Database connect karein agar connected nahi hai
-    if (mongoose.connection.readyState !== 1) {
-       await mongoose.connect(process.env.MONGODB_URI!);
-    }
-
-    // Mongoose model use karein, raw collection nahi
-    const project = await Report.findOne({ _id: projectId, userId });
-
+    const project = await findOwnedProject(projectId, userId);
     if (!project) {
       console.log("Project NOT found in DB");
       return NextResponse.json({ error: "Project not found" }, { status: 404 });
@@ -34,7 +43,10 @@ export async function GET(req: Request, { params }: { params: { projectId: strin
   }
 }
 
-export async function PATCH(req: Request, { params }: { params: { projectId: string } }) {
+export async function PATCH(
+  req: Request,
+  { params }: { params: { projectId: string } }
+) {
   try {
     const { userId } = auth();
     if (!userId) {
@@ -42,12 +54,36 @@ export async function PATCH(req: Request, { params }: { params: { projectId: str
     }
 
     const { projectId } = params;
-    const body = await req.json();
-    const { structure, contentMap, references, aiProfile, projectTitle, projectAdvisor, department, submissionMonthYear, teamMembers, degree, faculty, city, universityName, internalExaminer, externalExaminer, headOfDepartment, approvalDate, title, universityLogo, internalExaminerDesignation, externalExaminerDesignation, externalExaminerOrganization } = body;
-
-    if (mongoose.connection.readyState !== 1) {
-      await mongoose.connect(process.env.MONGODB_URI!);
+    if (!ObjectId.isValid(projectId)) {
+      return NextResponse.json({ error: "Invalid project id" }, { status: 400 });
     }
+
+    const body = await req.json().catch(() => ({}));
+    const {
+      structure,
+      contentMap,
+      references,
+      aiProfile,
+      diagramSpecs,
+      projectTitle,
+      projectAdvisor,
+      department,
+      submissionMonthYear,
+      teamMembers,
+      degree,
+      faculty,
+      city,
+      universityName,
+      internalExaminer,
+      externalExaminer,
+      headOfDepartment,
+      approvalDate,
+      title,
+      universityLogo,
+      internalExaminerDesignation,
+      externalExaminerDesignation,
+      externalExaminerOrganization,
+    } = body;
 
     const $set: Record<string, unknown> = {
       updatedAt: new Date(),
@@ -56,6 +92,7 @@ export async function PATCH(req: Request, { params }: { params: { projectId: str
     if (contentMap !== undefined) $set.contentMap = contentMap;
     if (references !== undefined) $set.references = references;
     if (aiProfile !== undefined) $set.aiProfile = normalizeAiProfile(aiProfile);
+    if (diagramSpecs !== undefined) $set.diagramSpecs = diagramSpecs;
     if (projectTitle !== undefined) $set.projectTitle = projectTitle;
     if (title !== undefined) $set.title = title;
     if (projectAdvisor !== undefined) $set.projectAdvisor = projectAdvisor;
@@ -71,22 +108,40 @@ export async function PATCH(req: Request, { params }: { params: { projectId: str
     if (headOfDepartment !== undefined) $set.headOfDepartment = headOfDepartment;
     if (approvalDate !== undefined) $set.approvalDate = approvalDate;
     if (universityLogo !== undefined) $set.universityLogo = universityLogo;
-    if (internalExaminerDesignation !== undefined) $set.internalExaminerDesignation = internalExaminerDesignation;
-    if (externalExaminerDesignation !== undefined) $set.externalExaminerDesignation = externalExaminerDesignation;
-    if (externalExaminerOrganization !== undefined) $set.externalExaminerOrganization = externalExaminerOrganization;
+    if (internalExaminerDesignation !== undefined) {
+      $set.internalExaminerDesignation = internalExaminerDesignation;
+    }
+    if (externalExaminerDesignation !== undefined) {
+      $set.externalExaminerDesignation = externalExaminerDesignation;
+    }
+    if (externalExaminerOrganization !== undefined) {
+      $set.externalExaminerOrganization = externalExaminerOrganization;
+    }
 
-    // Poora tree structure aur contentMap update karein
-    const updatedProject = await Report.findOneAndUpdate(
-      { _id: projectId, userId },
+    const client = await clientPromise;
+    const db = client.db("reportpeer");
+
+    // Same ownership lookup as GET / generate (native driver + ObjectId).
+    const updatedProject = await db.collection("projects").findOneAndUpdate(
+      { _id: new ObjectId(projectId), userId },
       { $set },
-      { new: true }
+      { returnDocument: "after" }
     );
 
-    if (!updatedProject) {
+    // Driver return shape differs by version: document | { value: document }.
+    const doc =
+      updatedProject &&
+      typeof updatedProject === "object" &&
+      "value" in (updatedProject as unknown as Record<string, unknown>)
+        ? (updatedProject as unknown as { value: unknown }).value
+        : updatedProject;
+
+    if (!doc) {
+      console.log("PATCH Project NOT found:", projectId, "userId:", userId);
       return NextResponse.json({ error: "Project not found" }, { status: 404 });
     }
 
-    return NextResponse.json({ success: true, data: updatedProject });
+    return NextResponse.json({ success: true, data: doc });
   } catch (error) {
     console.error("PATCH Error:", error);
     return NextResponse.json({ error: "Failed to update project" }, { status: 500 });
