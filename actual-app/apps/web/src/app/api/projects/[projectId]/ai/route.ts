@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import mongoose from "mongoose";
 import Report from "@/models/Report";
 import { AiClientError, createChatCompletion } from "@/services/ai/aiClient";
+import { EMPTY_AI_PROFILE_MESSAGE } from "@/services/ai/aiProfile";
 import { buildGenerateContext } from "@/services/ai/buildContext";
 import { JUW_SYSTEM_PROMPT, buildGenerateUserPrompt } from "@/services/ai/prompts";
 
@@ -60,6 +61,7 @@ export async function POST(
           projectTitle: (project as any).projectTitle,
           structure: (project as any).structure || [],
           contentMap: (project as any).contentMap || {},
+          aiProfile: (project as any).aiProfile,
         },
         sectionId
       );
@@ -70,13 +72,28 @@ export async function POST(
       );
     }
 
+    // Completely empty profile → do not call the LLM or invent project facts.
+    if (context.profileEmpty) {
+      return NextResponse.json({
+        action: "generate",
+        sectionId,
+        sectionTitle: context.sectionTitle,
+        draft: EMPTY_AI_PROFILE_MESSAGE,
+        needsProfile: true,
+      });
+    }
+
     const draft = await createChatCompletion(
       [
         { role: "system", content: JUW_SYSTEM_PROMPT },
         {
           role: "user",
           content: buildGenerateUserPrompt({
-            ...context,
+            projectTitle: context.projectTitle,
+            sectionTitle: context.sectionTitle,
+            sectionPath: context.sectionPath,
+            existingContent: context.existingContent,
+            aiProfileText: context.aiProfileText,
             message,
           }),
         },

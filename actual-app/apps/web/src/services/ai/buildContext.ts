@@ -10,12 +10,19 @@ import {
   type ContentBlock,
   type StructureItem,
 } from "@/lib/structureUtils";
+import {
+  type AiProfile,
+  formatAiProfileForPrompt,
+  isAiProfileEmpty,
+  normalizeAiProfile,
+} from "@/services/ai/aiProfile";
 
 export type AiProjectSnapshot = {
   title?: string;
   projectTitle?: string;
   structure?: StructureItem[];
   contentMap?: Record<string, string>;
+  aiProfile?: unknown;
 };
 
 function findStructureItem(items: StructureItem[] | undefined, id: string): StructureItem | null {
@@ -75,12 +82,16 @@ export function buildGenerateContext(
   sectionTitle: string;
   sectionPath: string;
   existingContent: string;
+  aiProfile: AiProfile;
+  aiProfileText: string;
+  profileEmpty: boolean;
 } {
   const item = findStructureItem(project.structure, sectionId);
   if (!item) {
     throw new Error("Section not found in this project.");
   }
 
+  const aiProfile = normalizeAiProfile(project.aiProfile);
   const contentMap = project.contentMap || {};
   const blocks = ensureContentBlocks(item, contentMap);
   const existingContent = truncate(
@@ -89,11 +100,15 @@ export function buildGenerateContext(
   );
 
   const path = findPathLabels(project.structure, sectionId) || [formatHeadingLabel(item)];
+  const coverTitle = String(project.projectTitle || project.title || "").trim();
 
   return {
-    projectTitle: String(project.projectTitle || project.title || "FYP Report"),
+    projectTitle: aiProfile.projectTitle.trim() || coverTitle || "FYP Report",
     sectionTitle: formatHeadingLabel(item),
     sectionPath: path.join(" > "),
     existingContent,
+    aiProfile,
+    aiProfileText: formatAiProfileForPrompt(aiProfile),
+    profileEmpty: isAiProfileEmpty(aiProfile),
   };
 }

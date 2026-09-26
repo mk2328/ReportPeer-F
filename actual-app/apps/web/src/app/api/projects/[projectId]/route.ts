@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { auth } from "@clerk/nextjs/server";
 import Report from '@/models/Report'; // Aapka Mongoose model
 import mongoose from 'mongoose';
+import { normalizeAiProfile } from '@/services/ai/aiProfile';
 
 export async function GET(req: Request, { params }: { params: { projectId: string } }) {
   try {
@@ -42,7 +43,7 @@ export async function PATCH(req: Request, { params }: { params: { projectId: str
 
     const { projectId } = params;
     const body = await req.json();
-    const { structure, contentMap, references, projectTitle, projectAdvisor, department, submissionMonthYear, teamMembers, degree, faculty, city, universityName, internalExaminer, externalExaminer, headOfDepartment, approvalDate, title, universityLogo, internalExaminerDesignation, externalExaminerDesignation, externalExaminerOrganization } = body;
+    const { structure, contentMap, references, aiProfile, projectTitle, projectAdvisor, department, submissionMonthYear, teamMembers, degree, faculty, city, universityName, internalExaminer, externalExaminer, headOfDepartment, approvalDate, title, universityLogo, internalExaminerDesignation, externalExaminerDesignation, externalExaminerOrganization } = body;
 
     if (mongoose.connection.readyState !== 1) {
       await mongoose.connect(process.env.MONGODB_URI!);
@@ -54,6 +55,7 @@ export async function PATCH(req: Request, { params }: { params: { projectId: str
     if (structure !== undefined) $set.structure = structure;
     if (contentMap !== undefined) $set.contentMap = contentMap;
     if (references !== undefined) $set.references = references;
+    if (aiProfile !== undefined) $set.aiProfile = normalizeAiProfile(aiProfile);
     if (projectTitle !== undefined) $set.projectTitle = projectTitle;
     if (title !== undefined) $set.title = title;
     if (projectAdvisor !== undefined) $set.projectAdvisor = projectAdvisor;

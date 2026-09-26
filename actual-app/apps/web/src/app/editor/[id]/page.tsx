@@ -49,6 +49,13 @@ import {
     normalizeReferences,
     resolveCitations,
 } from "@/lib/references";
+import {
+    type AiProfile,
+    AI_PROFILE_FIELDS,
+    emptyAiProfile,
+    isAiProfileEmpty,
+    normalizeAiProfile,
+} from "@/services/ai/aiProfile";
 
 interface TeamMember {
     name: string;
@@ -280,6 +287,10 @@ export default function EditorPage() {
     const [aiError, setAiError] = useState<string | null>(null);
     const [isAiGenerating, setIsAiGenerating] = useState(false);
     const [aiMessage, setAiMessage] = useState("");
+    const [aiProfile, setAiProfile] = useState<AiProfile>(() => emptyAiProfile());
+    const [aiProfileDraft, setAiProfileDraft] = useState<AiProfile>(() => emptyAiProfile());
+    const [isEditingAiProfile, setIsEditingAiProfile] = useState(false);
+    const [isSavingAiProfile, setIsSavingAiProfile] = useState(false);
     const [isStructureSidebarOpen, setIsStructureSidebarOpen] = useState(true);
     const [contentMap, setContentMap] = useState<Record<string, string>>({});
     const [coverMeta, setCoverMeta] = useState<CoverMeta>(defaultCoverMeta);
@@ -313,6 +324,10 @@ export default function EditorPage() {
                 setChapters(numbered);
                 setContentMap(data.contentMap || {});
                 setReferences(normalizeReferences(data.references));
+                const loadedProfile = normalizeAiProfile(data.aiProfile);
+                setAiProfile(loadedProfile);
+                setAiProfileDraft(loadedProfile);
+                setIsEditingAiProfile(false);
                 setCoverMeta({
                     ...defaultCoverMeta(),
                     projectTitle: data.projectTitle || data.title || "",
@@ -400,6 +415,7 @@ export default function EditorPage() {
                 contentMap,
                 structure: chapters,
                 references,
+                aiProfile,
                 title: coverMeta.projectTitle || undefined,
                 projectTitle: coverMeta.projectTitle,
                 projectAdvisor: coverMeta.projectAdvisor,
@@ -419,6 +435,43 @@ export default function EditorPage() {
         });
         if (!response.ok) {
             throw new Error("Failed to save project");
+        }
+    };
+
+    const beginEditAiProfile = () => {
+        const draft = normalizeAiProfile(aiProfile);
+        if (!draft.projectTitle.trim() && coverMeta.projectTitle.trim()) {
+            draft.projectTitle = coverMeta.projectTitle.trim();
+        }
+        setAiProfileDraft(draft);
+        setIsEditingAiProfile(true);
+        setAiError(null);
+    };
+
+    const cancelEditAiProfile = () => {
+        setAiProfileDraft(normalizeAiProfile(aiProfile));
+        setIsEditingAiProfile(false);
+    };
+
+    const handleSaveAiProfile = async () => {
+        const next = normalizeAiProfile(aiProfileDraft);
+        setIsSavingAiProfile(true);
+        setAiError(null);
+        try {
+            const response = await fetch(`/api/projects/${id}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ aiProfile: next }),
+            });
+            if (!response.ok) throw new Error("Failed to save Project AI Profile");
+            setAiProfile(next);
+            setAiProfileDraft(next);
+            setIsEditingAiProfile(false);
+        } catch (err) {
+            console.error("AI profile save failed", err);
+            setAiError(err instanceof Error ? err.message : "Failed to save Project AI Profile");
+        } finally {
+            setIsSavingAiProfile(false);
         }
     };
 
@@ -2159,10 +2212,101 @@ export default function EditorPage() {
                                         {activeItem.title || "Select a heading"}
                                     </span>
                                 </div>
+
+                                <div className="rounded-md border border-slate-200/80 bg-white p-2.5 space-y-2">
+                                    <div className="flex items-center justify-between gap-2">
+                                        <div className="text-[10px] uppercase tracking-wider text-slate-400 font-medium">
+                                            Project AI Profile
+                                        </div>
+                                        {!isEditingAiProfile && (
+                                            <button
+                                                type="button"
+                                                onClick={beginEditAiProfile}
+                                                className="text-[11px] text-[#6F155F] hover:underline"
+                                            >
+                                                {isAiProfileEmpty(aiProfile) ? "Set up profile" : "Edit Profile"}
+                                            </button>
+                                        )}
+                                    </div>
+                                    {isEditingAiProfile ? (
+                                        <div className="space-y-2">
+                                            {AI_PROFILE_FIELDS.map((field) => (
+                                                <label key={field.key} className="block space-y-1">
+                                                    <span className="text-[11px] font-medium text-slate-600">
+                                                        {field.label}
+                                                    </span>
+                                                    {field.rows && field.rows > 1 ? (
+                                                        <textarea
+                                                            rows={field.rows}
+                                                            value={aiProfileDraft[field.key]}
+                                                            onChange={(e) =>
+                                                                setAiProfileDraft((prev) => ({
+                                                                    ...prev,
+                                                                    [field.key]: e.target.value,
+                                                                }))
+                                                            }
+                                                            placeholder={field.placeholder}
+                                                            className="w-full text-xs border border-slate-200 rounded-md p-2 focus:outline-none focus:ring-1 focus:ring-[#6F155F]/40 focus:border-[#6F155F]/40 resize-y min-h-[2.5rem]"
+                                                        />
+                                                    ) : (
+                                                        <input
+                                                            type="text"
+                                                            value={aiProfileDraft[field.key]}
+                                                            onChange={(e) =>
+                                                                setAiProfileDraft((prev) => ({
+                                                                    ...prev,
+                                                                    [field.key]: e.target.value,
+                                                                }))
+                                                            }
+                                                            placeholder={field.placeholder}
+                                                            className="w-full text-xs border border-slate-200 rounded-md p-2 focus:outline-none focus:ring-1 focus:ring-[#6F155F]/40 focus:border-[#6F155F]/40"
+                                                        />
+                                                    )}
+                                                </label>
+                                            ))}
+                                            <div className="flex gap-2 pt-1">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => void handleSaveAiProfile()}
+                                                    disabled={isSavingAiProfile}
+                                                    className="flex-1 text-xs bg-[#6F155F] text-white px-2.5 py-2 rounded-md hover:bg-[#5a114d] disabled:opacity-50"
+                                                >
+                                                    {isSavingAiProfile ? "Saving…" : "Save Profile"}
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={cancelEditAiProfile}
+                                                    disabled={isSavingAiProfile}
+                                                    className="text-xs border border-slate-200 px-2.5 py-2 rounded-md text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                                                >
+                                                    Cancel
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ) : isAiProfileEmpty(aiProfile) ? (
+                                        <p className="text-[11px] text-slate-500 leading-relaxed">
+                                            No profile yet. Add basic project facts so the AI does not guess when generating content.
+                                        </p>
+                                    ) : (
+                                        <div className="space-y-1.5 max-h-40 overflow-y-auto">
+                                            {AI_PROFILE_FIELDS.filter((f) => aiProfile[f.key].trim()).map((field) => (
+                                                <div key={field.key} className="text-[11px] text-slate-600">
+                                                    <span className="font-medium text-slate-700">{field.label}: </span>
+                                                    <span className="whitespace-pre-wrap">
+                                                        {aiProfile[field.key].length > 120
+                                                            ? `${aiProfile[field.key].slice(0, 120).trim()}…`
+                                                            : aiProfile[field.key]}
+                                                    </span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+
                                 <button
                                     type="button"
                                     onClick={handleAiGenerate}
-                                    disabled={isAiGenerating || isSaving || !activeItem.id}
+                                    disabled={isAiGenerating || isSaving || isSavingAiProfile || !activeItem.id}
                                     className="w-full text-left text-xs bg-white border border-slate-200 hover:border-[#6F155F]/40 hover:text-[#6F155F] p-2.5 rounded-md transition-colors disabled:opacity-50"
                                 >
                                     {isAiGenerating ? "Generating…" : "Generate content"}
@@ -2188,7 +2332,7 @@ export default function EditorPage() {
                                     </div>
                                 ) : (
                                     <div className="bg-white p-3.5 rounded-lg border border-slate-200/80 shadow-sm text-xs text-slate-500 leading-relaxed">
-                                        Select a heading, then choose Generate content. The draft appears here — it is not inserted into the report yet.
+                                        Complete the Project AI Profile, select a heading, then choose Generate content. The draft appears here — it is not inserted into the report yet.
                                     </div>
                                 )}
                             </div>

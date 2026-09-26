@@ -35,7 +35,19 @@ export interface IReport extends Document {
   // ---------------------------------------------------------
 
   /** Reference entries ({ id, type, authors, ... }); legacy docs may hold strings. */
-  references: any[]; 
+  references: any[];
+  /** Optional Project AI Profile for the Academic AI Copilot (P2). */
+  aiProfile?: {
+    projectTitle?: string;
+    problemStatement?: string;
+    purpose?: string;
+    objectives?: string;
+    targetUsers?: string;
+    mainFeatures?: string;
+    technologies?: string;
+    projectType?: string;
+    additionalContext?: string;
+  };
   appendices: {
     abbreviations: { term: string; definition: string }[];
   };
@@ -83,6 +95,7 @@ const ReportSchema = new Schema<IReport>(
     // ----------------------------
 
     references: { type: Schema.Types.Mixed, default: [] },
+    aiProfile: { type: Schema.Types.Mixed, default: undefined },
     appendices: {
       abbreviations: [
         {
