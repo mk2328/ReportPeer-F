@@ -18,7 +18,8 @@ def normalize_university(university: str | None) -> str:
 
 def load_university_bundle(university: str | None) -> tuple[dict, Path]:
     """
-    Load university rules and the Word template path.
+    Load university pack formatting config + Word template.
+    Pack layout: templates/<slug>/{config.json, template.docx, pack_manifest.json}.
     Phase 1 ships JUW only; unknown keys fall back to JUW.
     """
     slug = normalize_university(university)
@@ -38,3 +39,12 @@ def load_university_bundle(university: str | None) -> tuple[dict, Path]:
         raise FileNotFoundError("No template.docx found for report generation.")
 
     return config, template_path
+
+
+def resolve_university_pack(university: str | None) -> tuple[dict, Path]:
+    """
+    University-agnostic pack resolver (alias of load_university_bundle).
+    Core generation should call this so future packs (NED/IBA/…) plug in
+    without changing mapper/document logic.
+    """
+    return load_university_bundle(university)

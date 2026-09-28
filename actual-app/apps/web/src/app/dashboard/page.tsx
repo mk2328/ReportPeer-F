@@ -3,6 +3,7 @@
 import { useUser, UserButton } from "@clerk/nextjs";
 import Link from "next/link";
 import { useState, useEffect } from "react";
+import { flushSync } from "react-dom";
 import {
   BookOpenText,
   Plus,
@@ -14,6 +15,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
+import { EditorOpeningShell } from "@/components/editor/EditorOpeningShell";
 
 interface Project {
   _id: string;
@@ -22,6 +24,13 @@ interface Project {
   status: string;
   updatedAt: string;
 }
+
+const OPENING_STATUS_STEPS = [
+  "Opening your project…",
+  "Loading report structure…",
+  "Preparing editor…",
+  "Almost ready…",
+] as const;
 
 export default function DashboardPage() {
   const { user, isLoaded } = useUser();
@@ -32,8 +41,21 @@ export default function DashboardPage() {
   const [university, setUniversity] = useState("JUW");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  /** Instant click feedback before /editor/[id] mounts (covers compile gap). */
+  const [isOpeningEditor, setIsOpeningEditor] = useState(false);
+  const [openingStatus, setOpeningStatus] = useState<string>(OPENING_STATUS_STEPS[0]);
 
   const router = useRouter();
+
+  const openProjectEditor = (projectId: string) => {
+    if (!projectId || isOpeningEditor || isSubmitting) return;
+    // Paint loading UI in this same click before navigation/compile work.
+    flushSync(() => {
+      setIsOpeningEditor(true);
+      setOpeningStatus(OPENING_STATUS_STEPS[0]);
+    });
+    router.push(`/editor/${projectId}`);
+  };
 
   const fetchProjects = async () => {
     try {
@@ -56,9 +78,31 @@ export default function DashboardPage() {
     }
   }, [isLoaded, user]);
 
+  // Warm the editor route chunk so Dashboard → Editor feels faster.
+  useEffect(() => {
+    if (projects.length === 0) return;
+    for (const project of projects.slice(0, 8)) {
+      router.prefetch(`/editor/${project._id}`);
+    }
+  }, [projects, router]);
+
+  // Advance status copy while still on dashboard waiting for navigation/compile.
+  useEffect(() => {
+    if (!isOpeningEditor) return;
+    let step = 0;
+    const timer = window.setInterval(() => {
+      step = Math.min(step + 1, OPENING_STATUS_STEPS.length - 1);
+      setOpeningStatus(OPENING_STATUS_STEPS[step]);
+      if (step >= OPENING_STATUS_STEPS.length - 1) {
+        window.clearInterval(timer);
+      }
+    }, 900);
+    return () => window.clearInterval(timer);
+  }, [isOpeningEditor]);
+
   const handleCreateProject = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim()) return;
+    if (!title.trim() || isOpeningEditor) return;
 
     setIsSubmitting(true);
     setCreateError(null);
@@ -77,7 +121,7 @@ export default function DashboardPage() {
         setIsModalOpen(false);
 
         if (data.projectId) {
-          router.push(`/editor/${data.projectId}`);
+          openProjectEditor(data.projectId);
         } else {
           await fetchProjects();
         }
@@ -96,6 +140,10 @@ export default function DashboardPage() {
   };
 
   const firstName = user?.firstName || user?.fullName?.split(" ")[0] || "there";
+
+  if (isOpeningEditor) {
+    return <EditorOpeningShell status={openingStatus} />;
+  }
 
   return (
     <div className="min-h-screen overflow-x-hidden bg-[var(--rp-canvas)]">
@@ -180,10 +228,12 @@ export default function DashboardPage() {
         ) : (
           <div className="grid gap-4 sm:grid-cols-2 sm:gap-6 lg:grid-cols-3">
             {projects.map((project) => (
-              <Link
+              <button
                 key={project._id}
-                href={`/editor/${project._id}`}
-                className="group flex min-h-[210px] flex-col justify-between rounded-2xl border border-[var(--rp-line)] bg-white p-5 shadow-sm transition hover:border-[var(--rp-brand)]/30 hover:shadow-md sm:p-6"
+                type="button"
+                onClick={() => openProjectEditor(project._id)}
+                disabled={isOpeningEditor}
+                className="group flex min-h-[210px] flex-col justify-between rounded-2xl border border-[var(--rp-line)] bg-white p-5 text-left shadow-sm transition hover:border-[var(--rp-brand)]/30 hover:shadow-md sm:p-6 disabled:pointer-events-none disabled:opacity-70"
               >
                 <div>
                   <div className="flex items-start justify-between gap-3">
@@ -213,7 +263,7 @@ export default function DashboardPage() {
                       : new Date(project.updatedAt).toLocaleDateString()}
                   </div>
                 </div>
-              </Link>
+              </button>
             ))}
 
             <button

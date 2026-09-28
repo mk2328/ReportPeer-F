@@ -1,0 +1,100 @@
+{
+    "contentMap":  {
+                       "abstract":  "A",
+                       "ch1":  "",
+                       "ack":  "A",
+                       "ch1-1":  ""
+                   },
+    "title":  "Bullet Enter Workflow Test",
+    "university":  "JUW",
+    "meta":  {
+                 "submissionMonthYear":  "September 2026",
+                 "projectTitle":  "Bullet Enter Workflow Test",
+                 "students":  [
+                                  {
+                                      "seatNumber":  "1",
+                                      "name":  "A",
+                                      "enrollment":  "1"
+                                  }
+                              ]
+             },
+    "structure":  [
+                      {
+                          "title":  "Abstract",
+                          "level":  1,
+                          "id":  "abstract"
+                      },
+                      {
+                          "title":  "List of Figures",
+                          "level":  1,
+                          "id":  "lof"
+                      },
+                      {
+                          "title":  "List of Tables",
+                          "level":  1,
+                          "id":  "lot"
+                      },
+                      {
+                          "title":  "Acknowledgement",
+                          "level":  1,
+                          "id":  "ack"
+                      },
+                      {
+                          "title":  "CHAPTER 1 - INTRODUCTION",
+                          "level":  1,
+                          "id":  "ch1",
+                          "subitems":  [
+                                           {
+                                               "blocks":  [
+                                                              {
+                                                                  "id":  "p0",
+                                                                  "type":  "paragraph",
+                                                                  "text":  "Paragraph before list."
+                                                              },
+                                                              {
+                                                                  "listType":  "bullet",
+                                                                  "items":  [
+                                                                                {
+                                                                                    "level":  1,
+                                                                                    "id":  "i1",
+                                                                                    "text":  "Item 1"
+                                                                                },
+                                                                                {
+                                                                                    "level":  1,
+                                                                                    "id":  "i2",
+                                                                                    "text":  "Item 2"
+                                                                                },
+                                                                                {
+                                                                                    "level":  1,
+                                                                                    "id":  "i3",
+                                                                                    "text":  "Item 3"
+                                                                                },
+                                                                                {
+                                                                                    "level":  1,
+                                                                                    "id":  "i4",
+                                                                                    "text":  "Item 4"
+                                                                                },
+                                                                                {
+                                                                                    "level":  1,
+                                                                                    "id":  "i5",
+                                                                                    "text":  "Item 5"
+                                                                                }
+                                                                            ],
+                                                                  "id":  "list1",
+                                                                  "type":  "list"
+                                                              },
+                                                              {
+                                                                  "id":  "p1",
+                                                                  "type":  "paragraph",
+                                                                  "text":  "Paragraph after list."
+                                                              }
+                                                          ],
+                                               "title":  "Purpose",
+                                               "level":  2,
+                                               "id":  "ch1-1",
+                                               "number":  "1.1"
+                                           }
+                                       ]
+                      }
+                  ]
+}

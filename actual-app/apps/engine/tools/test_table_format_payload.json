@@ -1,0 +1,72 @@
+{
+  "title": "Table Formatting Verification",
+  "university": "JUW",
+  "structure": [
+    { "id": "abstract", "title": "Abstract", "level": 1 },
+    { "id": "lof", "title": "List of Figures", "level": 1 },
+    { "id": "lot", "title": "List of Tables", "level": 1 },
+    { "id": "ack", "title": "Acknowledgement", "level": 1 },
+    {
+      "id": "ch1",
+      "title": "INTRODUCTION",
+      "level": 1,
+      "number": "1",
+      "subitems": [
+        {
+          "id": "ch1-1",
+          "title": "Table formatting",
+          "level": 2,
+          "number": "1.1",
+          "blocks": [
+            {
+              "id": "p-before",
+              "type": "paragraph",
+              "text": "Paragraph before the formatted table."
+            },
+            {
+              "id": "tbl-fmt",
+              "type": "table",
+              "caption": "Formatted sample table",
+              "columns": [
+                { "text": "Feature", "bold": true, "align": "center", "background": "D9E2F3" },
+                { "text": "A and B merged", "bold": true, "align": "center", "background": "D9E2F3", "colspan": 2 },
+                { "text": "", "hidden": true }
+              ],
+              "data": [
+                [
+                  { "text": "Shading", "background": "FFF2CC" },
+                  { "text": "Left", "align": "left", "textColor": "C00000" },
+                  { "text": "Center", "align": "center", "bold": true, "textColor": "0070C0" }
+                ],
+                [
+                  { "text": "Merged body", "background": "E2EFDA", "colspan": 2, "align": "center", "bold": true },
+                  { "text": "", "hidden": true },
+                  { "text": "Right", "align": "right", "textColor": "548235" }
+                ]
+              ]
+            },
+            {
+              "id": "p-after",
+              "type": "paragraph",
+              "text": "Paragraph after the formatted table."
+            }
+          ]
+        }
+      ]
+    },
+    { "id": "refs", "title": "References", "level": 1 }
+  ],
+  "contentMap": {
+    "abstract": "Table formatting verification abstract.",
+    "ack": "Acknowledgement text.",
+    "ch1-1": "Paragraph before the formatted table.\n\nParagraph after the formatted table."
+  },
+  "meta": {
+    "projectTitle": "Table Format Test",
+    "projectAdvisor": "Dr. Test",
+    "submissionMonthYear": "September 2026",
+    "teamMembers": [
+      { "name": "Test Student", "enrollment": "CS-001", "seatNumber": "1" }
+    ]
+  }
+}

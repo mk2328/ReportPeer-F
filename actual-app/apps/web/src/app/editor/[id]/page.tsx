@@ -1,14 +1,12 @@
 'use client';
 
-import { UserButton } from "@clerk/nextjs";
-import Link from "next/link";
 import { useState, useEffect, useRef, type ChangeEvent, type KeyboardEvent } from "react";
 import { useParams } from "next/navigation";
+import dynamic from "next/dynamic";
+import { flushSync } from "react-dom";
 import {
-    ChevronLeft, Sparkles, Loader2, ChevronRight, ChevronDown,
-    PanelRightOpen, PanelRightClose, PanelLeftOpen, PanelLeftClose, Send, Bot, Plus, FileText, Save, FileDown,
-    List, ListOrdered, IndentIncrease, IndentDecrease, Trash2,
-    Table2, ImagePlus, Pencil, Bold, AlignLeft, AlignCenter, AlignRight, Quote
+    Sparkles, Loader2,
+    PanelRightClose, Send, Bot
 } from "lucide-react";
 import {
     type ContentBlock,
@@ -22,7 +20,6 @@ import {
     appendAiDraftToBlocks,
     replaceParagraphBlocksWithAiDraft,
     sectionHasParagraphContent,
-    canMergeTableCells,
     canUnmergeTableCell,
     clearTableMerges,
     deleteStructureItem,
@@ -31,7 +28,6 @@ import {
     isProtectedStructureId,
     mergeTableCells,
     newId,
-    normalizeTableCell,
     renumberStructure,
     renameStructureItem,
     setTableCell,
@@ -41,16 +37,12 @@ import {
 } from "@/lib/structureUtils";
 import {
     type ReferenceEntry,
-    type ReferenceType,
-    REFERENCE_TYPES,
     buildCitationNumbers,
     citationToken,
     countCitations,
     emptyReference,
-    formatReference,
     insertCitationAt,
     normalizeReferences,
-    resolveCitations,
 } from "@/lib/references";
 import {
     type AiProfile,
@@ -80,8 +72,41 @@ import {
     normalizePersistedDiagramSpecs,
     validateDiagramSpec,
 } from "@/services/ai/diagramSpec";
-import { FypDiagramSpecEditor } from "@/components/FypDiagramSpecEditor";
-import { FypDiagramPreview } from "@/components/FypDiagramPreview";
+import { EditorHeader } from "@/components/editor/EditorHeader";
+import { EditorOpeningShell } from "@/components/editor/EditorOpeningShell";
+import { ReportGenerateOverlay } from "@/components/editor/ReportGenerateOverlay";
+import { CoverMetaPanel, type CoverMeta, type TeamMember } from "@/components/editor/CoverMetaPanel";
+import { ReferencesPanel } from "@/components/editor/ReferencesPanel";
+import { StructureSidebar } from "@/components/editor/StructureSidebar";
+import { ContentToolbar } from "@/components/editor/ContentToolbar";
+import { SectionCanvas } from "@/components/editor/SectionCanvas";
+import { ParagraphBlock } from "@/components/editor/blocks/ParagraphBlock";
+import { ListBlock } from "@/components/editor/blocks/ListBlock";
+import { TableBlock } from "@/components/editor/blocks/TableBlock";
+import { FigureBlock } from "@/components/editor/blocks/FigureBlock";
+
+/** Lazy: keep Mermaid / diagram editors off the initial /editor/[id] bundle. */
+const FypDiagramSpecEditor = dynamic(
+    () =>
+        import("@/components/FypDiagramSpecEditor").then((mod) => mod.FypDiagramSpecEditor),
+    {
+        ssr: false,
+        loading: () => (
+            <div className="text-[10px] text-slate-400 px-1 py-2">Loading diagram editor…</div>
+        ),
+    }
+);
+
+const FypDiagramPreview = dynamic(
+    () => import("@/components/FypDiagramPreview").then((mod) => mod.FypDiagramPreview),
+    {
+        ssr: false,
+        loading: () => (
+            <div className="text-[10px] text-slate-400 px-3 py-6 text-center">Rendering preview…</div>
+        ),
+    }
+);
+
 
 function getSectionParagraphText(blocks: ContentBlock[]): string {
     return blocks
@@ -89,31 +114,6 @@ function getSectionParagraphText(blocks: ContentBlock[]): string {
         .map((block) => (block.text || "").trim())
         .filter(Boolean)
         .join("\n\n");
-}
-
-interface TeamMember {
-    name: string;
-    enrollment: string;
-    seatNumber: string;
-}
-
-interface CoverMeta {
-    projectTitle: string;
-    projectAdvisor: string;
-    submissionMonth: string;
-    submissionYear: string;
-    internalExaminer: string;
-    internalExaminerDesignation: string;
-    externalExaminer: string;
-    externalExaminerDesignation: string;
-    externalExaminerOrganization: string;
-    headOfDepartment: string;
-    teamMembers: TeamMember[];
-    universityLogo: {
-        dataUrl: string;
-        fileName: string;
-        mimeType: string;
-    } | null;
 }
 
 const emptyTeamMember = (): TeamMember => ({
@@ -197,119 +197,6 @@ function newTable(rows = 3, cols = 3): ContentTable {
     };
 }
 
-/** Keep paragraph textareas the height of their text so they read as document flow. */
-function autoGrowTextarea(el: HTMLTextAreaElement | null) {
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight}px`;
-}
-
-function listNumberLabels(items: ContentListItem[]): string[] {
-    const counters = [0, 0, 0, 0];
-    let previous = 1;
-    return items.map((item, index) => {
-        let level = Math.max(1, Math.min(item.level || 1, MAX_LIST_LEVEL));
-        level = index === 0 ? 1 : Math.min(level, previous + 1);
-        counters[level - 1] += 1;
-        for (let i = level; i < MAX_LIST_LEVEL; i += 1) counters[i] = 0;
-        previous = level;
-        const label = counters.slice(0, level).join(".");
-        return level === 1 ? `${label}.` : label;
-    });
-}
-
-// --- 4. Sidebar Item Component ---
-const SidebarItem = ({
-    item,
-    level = 0,
-    activeItem,
-    setActiveItem,
-    onAddSubItem,
-    onRenameItem,
-    onDeleteItem,
-}: {
-    item: StructureItem,
-    level?: number,
-    activeItem: { id: string, title: string },
-    setActiveItem: (item: { id: string, title: string }) => void,
-    onAddSubItem: (id: string, parentLevel: number) => void,
-    onRenameItem: (id: string) => void,
-    onDeleteItem: (id: string) => void,
-}) => {
-    const [isExpanded, setIsExpanded] = useState(true);
-    const hasChildren = item.subitems && item.subitems.length > 0;
-    const protectedItem = isProtectedStructureId(item.id);
-
-    return (
-        <div>
-            <div className="flex items-center group py-0.5" style={{ paddingLeft: `${level * 12 + 12}px` }}>
-                <button
-                    onClick={() => {
-                        if (hasChildren) setIsExpanded(!isExpanded);
-                        setActiveItem({ id: item.id, title: formatHeadingLabel(item) });
-                    }}
-                    className={`flex-1 text-left px-2 py-1.5 text-[11px] rounded-md flex items-center gap-1 min-w-0 transition-colors
-                    ${activeItem.id === item.id ? "bg-[#F2EBF1] text-[#6F155F] font-medium border-l-2 border-[#6F155F]" : "text-slate-600 hover:bg-slate-50 border-l-2 border-transparent"}`}
-                >
-                    <div className="w-3 flex items-center justify-center shrink-0">
-                        {hasChildren && (isExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />)}
-                    </div>
-                    <FileText className="h-3 w-3 shrink-0" />
-                    <span className="truncate">{formatHeadingLabel(item)}</span>
-                </button>
-                <button
-                    type="button"
-                    title="Rename"
-                    onClick={(e) => {
-                        e.stopPropagation();
-                        onRenameItem(item.id);
-                    }}
-                    className="opacity-0 group-hover:opacity-100 p-1 hover:bg-[#F2EBF1] rounded text-[#6F155F]"
-                >
-                    <Pencil className="h-3 w-3" />
-                </button>
-                {!protectedItem && (
-                    <button
-                        type="button"
-                        title="Delete"
-                        onClick={(e) => {
-                            e.stopPropagation();
-                            onDeleteItem(item.id);
-                        }}
-                        className="opacity-0 group-hover:opacity-100 p-1 hover:bg-red-50 rounded text-red-500"
-                    >
-                        <Trash2 className="h-3 w-3" />
-                    </button>
-                )}
-                <button
-                    type="button"
-                    title="Add subheading"
-                    onClick={(e) => {
-                        e.stopPropagation();
-                        onAddSubItem(item.id, item.level || level + 1);
-                    }}
-                    className="opacity-0 group-hover:opacity-100 p-1 hover:bg-[#F2EBF1] rounded text-[#6F155F]"
-                >
-                    <Plus className="h-3 w-3" />
-                </button>
-            </div>
-
-            {isExpanded && item.subitems?.map(sub => (
-                <SidebarItem
-                    key={sub.id}
-                    item={sub}
-                    level={level + 1}
-                    activeItem={activeItem}
-                    setActiveItem={setActiveItem}
-                    onAddSubItem={onAddSubItem}
-                    onRenameItem={onRenameItem}
-                    onDeleteItem={onDeleteItem}
-                />
-            ))}
-        </div>
-    );
-};
-
 export default function EditorPage() {
     const params = useParams();
     const id = params.id as string;
@@ -360,9 +247,13 @@ export default function EditorPage() {
     const [coverMeta, setCoverMeta] = useState<CoverMeta>(defaultCoverMeta);
     const [showCoverMeta, setShowCoverMeta] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
+    const [loadStatus, setLoadStatus] = useState("Opening your project…");
     const [isSaving, setIsSaving] = useState(false);
     const [isGenerating, setIsGenerating] = useState(false);
     const [generatingFormat, setGeneratingFormat] = useState<"docx" | "pdf" | null>(null);
+    const [generateStatus, setGenerateStatus] = useState("Preparing your report…");
+    const [generatePhase, setGeneratePhase] = useState<"working" | "success" | "error">("working");
+    const [generateError, setGenerateError] = useState<string | null>(null);
     const [activeBlockId, setActiveBlockId] = useState<string | null>(null);
     const [pendingFocusId, setPendingFocusId] = useState<string | null>(null);
     const [selectedTableCells, setSelectedTableCells] = useState<TableCellRef[]>([]);
@@ -376,76 +267,161 @@ export default function EditorPage() {
     /** Caret in the last focused paragraph, so citations insert where the user was typing. */
     const paragraphCaretRef = useRef<{ blockId: string; start: number; end: number } | null>(null);
 
-    // --- 1. Load Data ---
+    // --- 1. Load Data: critical lite path → interactive, then background full hydrate ---
     useEffect(() => {
         if (!id) return;
-        const fetchData = async () => {
-            try {
-                const res = await fetch(`/api/projects/${id}`);
-                if (!res.ok) throw new Error("Failed to fetch");
-                const data = await res.json();
-                const numbered = renumberStructure(data.structure || []);
-                setChapters(numbered);
-                setContentMap(data.contentMap || {});
-                setReferences(normalizeReferences(data.references));
-                const loadedProfile = normalizeAiProfile(data.aiProfile);
-                setAiProfile(loadedProfile);
-                setAiProfileDraft(loadedProfile);
-                setIsEditingAiProfile(false);
-                setDiagramSpecs(normalizePersistedDiagramSpecs(data.diagramSpecs));
-                setCoverMeta({
-                    ...defaultCoverMeta(),
-                    projectTitle: data.projectTitle || data.title || "",
-                    projectAdvisor: data.projectAdvisor || "",
-                    ...(() => {
-                        const parsed = parseSubmissionMonthYear(data.submissionMonthYear);
-                        return { submissionMonth: parsed.month, submissionYear: parsed.year };
-                    })(),
-                    internalExaminer: data.internalExaminer || "",
-                    internalExaminerDesignation: data.internalExaminerDesignation || "",
-                    externalExaminer: data.externalExaminer || "",
-                    externalExaminerDesignation: data.externalExaminerDesignation || "",
-                    externalExaminerOrganization: data.externalExaminerOrganization || "",
-                    headOfDepartment: data.headOfDepartment || "",
-                    teamMembers:
-                        Array.isArray(data.teamMembers) && data.teamMembers.length > 0
-                            ? data.teamMembers.slice(0, 4).map((m: TeamMember) => ({
-                                name: m.name || "",
-                                enrollment: m.enrollment || "",
-                                seatNumber: m.seatNumber || "",
-                            }))
-                            : [emptyTeamMember()],
-                    universityLogo: data.universityLogo?.dataUrl
-                        ? {
-                            dataUrl: data.universityLogo.dataUrl,
-                            fileName: data.universityLogo.fileName || "logo",
-                            mimeType: data.universityLogo.mimeType || "image/png",
-                        }
-                        : null,
-                });
-                if (numbered.length > 0) {
-                    setActiveItem({
+
+        const controller = new AbortController();
+        let active = true;
+        let idleTimer: ReturnType<typeof setTimeout> | null = null;
+        let idleHandle: number | null = null;
+
+        const applyCoreProjectData = (data: Record<string, unknown>) => {
+            const numbered = renumberStructure(
+                (Array.isArray(data.structure) ? data.structure : []) as StructureItem[]
+            );
+            setChapters(numbered);
+            setContentMap(
+                data.contentMap && typeof data.contentMap === "object"
+                    ? (data.contentMap as Record<string, string>)
+                    : {}
+            );
+            const logo = data.universityLogo as
+                | { dataUrl?: string; fileName?: string; mimeType?: string }
+                | undefined;
+            setCoverMeta({
+                ...defaultCoverMeta(),
+                projectTitle: String(data.projectTitle || data.title || ""),
+                projectAdvisor: String(data.projectAdvisor || ""),
+                ...(() => {
+                    const parsed = parseSubmissionMonthYear(
+                        typeof data.submissionMonthYear === "string"
+                            ? data.submissionMonthYear
+                            : undefined
+                    );
+                    return { submissionMonth: parsed.month, submissionYear: parsed.year };
+                })(),
+                internalExaminer: String(data.internalExaminer || ""),
+                internalExaminerDesignation: String(data.internalExaminerDesignation || ""),
+                externalExaminer: String(data.externalExaminer || ""),
+                externalExaminerDesignation: String(data.externalExaminerDesignation || ""),
+                externalExaminerOrganization: String(data.externalExaminerOrganization || ""),
+                headOfDepartment: String(data.headOfDepartment || ""),
+                teamMembers:
+                    Array.isArray(data.teamMembers) && data.teamMembers.length > 0
+                        ? data.teamMembers.slice(0, 4).map((m: TeamMember) => ({
+                              name: m.name || "",
+                              enrollment: m.enrollment || "",
+                              seatNumber: m.seatNumber || "",
+                          }))
+                        : [emptyTeamMember()],
+                universityLogo: logo?.dataUrl
+                    ? {
+                          dataUrl: logo.dataUrl,
+                          fileName: logo.fileName || "logo",
+                          mimeType: logo.mimeType || "image/png",
+                      }
+                    : null,
+            });
+            if (numbered.length > 0) {
+                setActiveItem((prev) => {
+                    if (prev.id && findStructureItem(numbered, prev.id)) {
+                        return prev;
+                    }
+                    return {
                         id: numbered[0].id,
                         title: formatHeadingLabel(numbered[0]),
-                    });
-                }
-            } catch (err) {
-                console.error("Error loading project:", err);
-            } finally {
-                setIsLoading(false);
+                    };
+                });
             }
         };
-        fetchData();
+
+        const applyDeferredProjectData = (data: Record<string, unknown>) => {
+            setReferences(normalizeReferences(data.references));
+            const loadedProfile = normalizeAiProfile(data.aiProfile);
+            setAiProfile(loadedProfile);
+            setAiProfileDraft(loadedProfile);
+            setIsEditingAiProfile(false);
+            setDiagramSpecs(normalizePersistedDiagramSpecs(data.diagramSpecs));
+            // Restore figure/logo binaries + any structure edits from server.
+            applyCoreProjectData(data);
+        };
+
+        const hydrateFullInBackground = () => {
+            void (async () => {
+                try {
+                    const fullRes = await fetch(`/api/projects/${id}`, {
+                        signal: controller.signal,
+                    });
+                    if (!fullRes.ok || !active) return;
+                    const fullData = await fullRes.json();
+                    if (!active) return;
+                    applyDeferredProjectData(fullData);
+                } catch (err) {
+                    if (err instanceof DOMException && err.name === "AbortError") return;
+                    if (err instanceof Error && err.name === "AbortError") return;
+                    console.error("Background project hydrate failed:", err);
+                }
+            })();
+        };
+
+        const scheduleBackgroundHydrate = () => {
+            const run = () => {
+                if (!active) return;
+                hydrateFullInBackground();
+            };
+            if (typeof window !== "undefined" && "requestIdleCallback" in window) {
+                idleHandle = window.requestIdleCallback(run, { timeout: 2500 });
+            } else {
+                idleTimer = setTimeout(run, 0);
+            }
+        };
+
+        const fetchData = async () => {
+            setIsLoading(true);
+            setLoadStatus("Opening your project…");
+            try {
+                setLoadStatus("Loading report structure…");
+                const liteRes = await fetch(`/api/projects/${id}?lite=1`, {
+                    signal: controller.signal,
+                });
+                if (!liteRes.ok) throw new Error("Failed to fetch");
+                setLoadStatus("Preparing editor…");
+                const liteData = await liteRes.json();
+                if (!active) return;
+                applyCoreProjectData(liteData);
+                setLoadStatus("Almost ready…");
+                // Open desktop sidebars only after core data is ready (avoid blocking first paint).
+                if (typeof window !== "undefined" && window.matchMedia("(min-width: 768px)").matches) {
+                    setIsStructureSidebarOpen(true);
+                    setIsAiSidebarOpen(true);
+                }
+                setIsLoading(false);
+                // Media / refs / AI / diagrams — do not block interactivity.
+                scheduleBackgroundHydrate();
+            } catch (err) {
+                if (err instanceof DOMException && err.name === "AbortError") return;
+                if (err instanceof Error && err.name === "AbortError") return;
+                console.error("Error loading project:", err);
+                if (active) {
+                    setLoadStatus("Could not load project");
+                    setIsLoading(false);
+                }
+            }
+        };
+
+        void fetchData();
+        return () => {
+            active = false;
+            controller.abort();
+            if (idleTimer) clearTimeout(idleTimer);
+            if (idleHandle != null && typeof window !== "undefined" && "cancelIdleCallback" in window) {
+                window.cancelIdleCallback(idleHandle);
+            }
+        };
     }, [id]);
 
-    // Open structure + Copilot sidebars by default on desktop; keep compact on small screens.
-    useEffect(() => {
-        if (typeof window === "undefined") return;
-        if (window.matchMedia("(min-width: 768px)").matches) {
-            setIsStructureSidebarOpen(true);
-            setIsAiSidebarOpen(true);
-        }
-    }, []);
+    // Desktop sidebar defaults are applied after lite load (see fetch effect above).
 
     useEffect(() => {
         const item = findStructureItem(chapters, activeItem.id);
@@ -576,42 +552,93 @@ export default function EditorPage() {
     };
 
     const handleGenerate = async (format: "docx" | "pdf" = "docx") => {
-        setIsGenerating(true);
-        setGeneratingFormat(format);
+        if (isGenerating) return;
+
+        flushSync(() => {
+            setIsGenerating(true);
+            setGeneratingFormat(format);
+            setGeneratePhase("working");
+            setGenerateError(null);
+            setGenerateStatus("Preparing your report…");
+        });
+
+        let convertTimer: ReturnType<typeof setTimeout> | null = null;
+        let finalizeHintTimer: ReturnType<typeof setTimeout> | null = null;
+
         try {
             await persistProject();
+            setGenerateStatus("Building Word document…");
+
+            // Soft stage for Word COM PDF export — no real backend progress available.
+            if (format === "pdf") {
+                convertTimer = setTimeout(() => {
+                    setGenerateStatus("Converting to PDF…");
+                }, 4500);
+                finalizeHintTimer = setTimeout(() => {
+                    setGenerateStatus((prev) =>
+                        prev === "Converting to PDF…" ? "Finalizing your report…" : prev
+                    );
+                }, 14000);
+            }
+
             const response = await fetch(`/api/projects/${id}/generate`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ format }),
             });
 
+            if (convertTimer) clearTimeout(convertTimer);
+            if (finalizeHintTimer) clearTimeout(finalizeHintTimer);
+
             if (!response.ok) {
                 const errorData = await response.json().catch(() => ({}));
                 throw new Error(
-                    errorData.error ||
-                        (format === "pdf" ? "Failed to generate PDF" : "Failed to generate DOCX")
+                    typeof errorData.error === "string"
+                        ? errorData.error
+                        : format === "pdf"
+                          ? "Failed to generate PDF"
+                          : "Failed to generate DOCX"
                 );
             }
 
+            setGenerateStatus("Finalizing your report…");
             const blob = await response.blob();
             const downloadUrl = URL.createObjectURL(blob);
             const link = document.createElement("a");
             const header = response.headers.get("Content-Disposition") || "";
             const match = header.match(/filename="([^"]+)"/);
             link.href = downloadUrl;
-            link.download = match?.[1] || (format === "pdf" ? "FYP_Report.pdf" : "FYP_Report.docx");
+            link.download =
+                match?.[1] || (format === "pdf" ? "FYP_Report.pdf" : "FYP_Report.docx");
             document.body.appendChild(link);
             link.click();
             link.remove();
             URL.revokeObjectURL(downloadUrl);
-        } catch (err) {
-            console.error("Generate failed", err);
-            alert(err instanceof Error ? err.message : "Failed to generate report");
-        } finally {
+
+            setGenerateStatus(format === "pdf" ? "PDF is ready!" : "DOCX is ready!");
+            setGeneratePhase("success");
+            await new Promise((resolve) => setTimeout(resolve, 900));
             setIsGenerating(false);
             setGeneratingFormat(null);
+        } catch (err) {
+            if (convertTimer) clearTimeout(convertTimer);
+            if (finalizeHintTimer) clearTimeout(finalizeHintTimer);
+            console.error("Generate failed", err);
+            const message =
+                err instanceof Error ? err.message : "Failed to generate report";
+            setGenerateError(message);
+            setGenerateStatus(
+                format === "pdf" ? "PDF generation failed" : "DOCX generation failed"
+            );
+            setGeneratePhase("error");
+            setIsGenerating(false);
         }
+    };
+
+    const dismissGenerateOverlay = () => {
+        setGeneratingFormat(null);
+        setGeneratePhase("working");
+        setGenerateError(null);
     };
 
     /** Phase P0: request a draft for the active section; do not insert into the report yet. */
@@ -1893,1086 +1920,192 @@ export default function EditorPage() {
         };
     };
 
-    if (isLoading) return <div className="h-screen flex items-center justify-center"><Loader2 className="animate-spin h-8 w-8 text-[#6F155F]" /></div>;
+    if (isLoading) {
+        return <EditorOpeningShell status={loadStatus} />;
+    }
 
     return (
         <div className="h-screen flex flex-col bg-[#F4F2F5] overflow-hidden">
-            <header className="h-14 border-b border-slate-200/80 bg-white px-3 sm:px-4 flex items-center justify-between gap-2 shrink-0 shadow-[0_1px_0_rgba(15,23,42,0.03)]">
-                <div className="flex items-center gap-2 sm:gap-3 min-w-0 shrink-0">
-                    <Link href="/dashboard" className="text-slate-400 hover:text-[#6F155F] transition-colors shrink-0" title="Back to dashboard">
-                        <ChevronLeft className="h-5 w-5" />
-                    </Link>
-                    <h1 className="text-sm font-semibold tracking-tight text-slate-800 truncate">Editor</h1>
-                </div>
-                <div className="flex items-center gap-1 sm:gap-1.5 min-w-0 overflow-x-auto no-scrollbar justify-end">
-                    <button
-                        onClick={() => setShowCoverMeta((open) => !open)}
-                        className={`text-xs flex items-center gap-1.5 px-2 py-1.5 rounded-md transition-colors shrink-0 ${
-                            showCoverMeta
-                                ? "text-[#6F155F] bg-[#F2EBF1]"
-                                : "text-slate-500 hover:text-[#6F155F] hover:bg-slate-50"
-                        }`}
-                        type="button"
-                        title="Title page and approval fields"
-                    >
-                        <FileText className="h-3.5 w-3.5" />
-                        <span className="hidden sm:inline">Title &amp; Approval</span>
-                    </button>
-                    <button
-                        onClick={() => setShowReferences((open) => !open)}
-                        className={`text-xs flex items-center gap-1.5 px-2 py-1.5 rounded-md transition-colors shrink-0 ${
-                            showReferences
-                                ? "text-[#6F155F] bg-[#F2EBF1]"
-                                : "text-slate-500 hover:text-[#6F155F] hover:bg-slate-50"
-                        }`}
-                        type="button"
-                        title="References"
-                    >
-                        <Quote className="h-3.5 w-3.5" />
-                        <span className="hidden sm:inline">References</span>
-                    </button>
-                    <button
-                        onClick={handleSave}
-                        disabled={isSaving || isGenerating}
-                        className="text-xs flex items-center gap-1.5 text-slate-500 hover:text-[#6F155F] px-2 py-1.5 rounded-md hover:bg-slate-50 transition-colors disabled:opacity-50 shrink-0"
-                        title="Save project"
-                    >
-                        {isSaving ? "Saving…" : <><Save className="h-3.5 w-3.5" /><span className="hidden md:inline">Save</span></>}
-                    </button>
-                    <button
-                        onClick={() => handleGenerate("docx")}
-                        disabled={isSaving || isGenerating}
-                        className="text-xs flex items-center gap-1.5 rounded-lg bg-[#6F155F] hover:bg-[#57104b] text-white px-2.5 sm:px-3 py-1.5 font-medium shadow-sm disabled:opacity-50 transition-colors shrink-0"
-                        title="Generate DOCX"
-                    >
-                        {isGenerating && generatingFormat === "docx" ? (
-                            <><Loader2 className="h-3.5 w-3.5 animate-spin" /><span className="hidden sm:inline">DOCX…</span></>
-                        ) : (
-                            <><FileDown className="h-3.5 w-3.5" /><span className="hidden sm:inline">DOCX</span></>
-                        )}
-                    </button>
-                    <button
-                        onClick={() => handleGenerate("pdf")}
-                        disabled={isSaving || isGenerating}
-                        className="text-xs flex items-center gap-1.5 rounded-lg border border-[#6F155F] bg-white hover:bg-[#F2EBF1] text-[#6F155F] px-2.5 sm:px-3 py-1.5 font-medium shadow-sm disabled:opacity-50 transition-colors shrink-0"
-                        title="Generate PDF"
-                    >
-                        {isGenerating && generatingFormat === "pdf" ? (
-                            <><Loader2 className="h-3.5 w-3.5 animate-spin" /><span className="hidden sm:inline">PDF…</span></>
-                        ) : (
-                            <><FileText className="h-3.5 w-3.5" /><span className="hidden sm:inline">PDF</span></>
-                        )}
-                    </button>
-                    <button
-                        onClick={() => setIsAiSidebarOpen(!isAiSidebarOpen)}
-                        className={`p-2 rounded-lg transition-colors shrink-0 ${
-                            isAiSidebarOpen
-                                ? "text-[#6F155F] bg-[#F2EBF1]"
-                                : "text-slate-500 hover:text-[#6F155F] hover:bg-slate-50"
-                        }`}
-                        title={isAiSidebarOpen ? "Hide Copilot" : "Show Copilot"}
-                    >
-                        {isAiSidebarOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
-                    </button>
-                    <div className="shrink-0 pl-0.5">
-                        <UserButton />
-                    </div>
-                </div>
-            </header>
+            {generatingFormat && (
+                <ReportGenerateOverlay
+                    format={generatingFormat}
+                    status={generateStatus}
+                    phase={generatePhase}
+                    errorMessage={generateError}
+                    onDismiss={dismissGenerateOverlay}
+                    onRetry={() => void handleGenerate(generatingFormat)}
+                />
+            )}
+            <EditorHeader
+                showCoverMeta={showCoverMeta}
+                showReferences={showReferences}
+                isAiSidebarOpen={isAiSidebarOpen}
+                isSaving={isSaving}
+                isGenerating={isGenerating || Boolean(generatingFormat)}
+                generatingFormat={generatingFormat}
+                onToggleCoverMeta={() => setShowCoverMeta((open) => !open)}
+                onToggleReferences={() => setShowReferences((open) => !open)}
+                onSave={handleSave}
+                onGenerate={handleGenerate}
+                onToggleAiSidebar={() => setIsAiSidebarOpen(!isAiSidebarOpen)}
+            />
 
             <div className="flex-1 flex min-h-0 overflow-hidden">
-                <aside className={`${isStructureSidebarOpen ? "w-64" : "w-12"} border-r border-slate-200/80 bg-white transition-all duration-300 shrink-0 overflow-hidden flex flex-col`}>
-                    {isStructureSidebarOpen ? (
-                        <div className="flex-1 overflow-y-auto pt-3 min-w-[16rem]">
-                            <div className="px-3 mb-3 flex items-center justify-between gap-2">
-                                <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-slate-400">Report Structure</div>
-                                <button
-                                    type="button"
-                                    title="Collapse structure"
-                                    onClick={() => setIsStructureSidebarOpen(false)}
-                                    className="p-1.5 text-slate-400 hover:text-[#6F155F] hover:bg-[#F2EBF1] rounded-md transition-colors"
-                                >
-                                    <PanelLeftClose className="h-4 w-4" />
-                                </button>
-                            </div>
-                            {chapters.map(ch => (
-                                <SidebarItem
-                                    key={ch.id}
-                                    item={ch}
-                                    level={ch.level || 1}
-                                    activeItem={activeItem}
-                                    setActiveItem={setActiveItem}
-                                    onAddSubItem={handleAddSubItem}
-                                    onRenameItem={handleRenameItem}
-                                    onDeleteItem={handleDeleteItem}
+                <StructureSidebar
+                    isOpen={isStructureSidebarOpen}
+                    chapters={chapters}
+                    activeItem={activeItem}
+                    setActiveItem={setActiveItem}
+                    onToggle={setIsStructureSidebarOpen}
+                    onAddSubItem={handleAddSubItem}
+                    onRenameItem={handleRenameItem}
+                    onDeleteItem={handleDeleteItem}
+                />
+
+                <SectionCanvas
+                    coverPanel={
+                        showCoverMeta ? (
+                            <CoverMetaPanel
+                                coverMeta={coverMeta}
+                                setCoverMeta={setCoverMeta}
+                                onAddTeamMember={() =>
+                                    setCoverMeta((m) => ({
+                                        ...m,
+                                        teamMembers:
+                                            m.teamMembers.length >= 4
+                                                ? m.teamMembers
+                                                : [...m.teamMembers, emptyTeamMember()],
+                                    }))
+                                }
+                            />
+                        ) : null
+                    }
+                    referencesPanel={
+                        showReferences ? (
+                            <ReferencesPanel
+                                references={references}
+                                referenceDraft={referenceDraft}
+                                citationNumbers={citationNumbers}
+                                setReferenceDraft={setReferenceDraft}
+                                onAddReference={() => setReferenceDraft(emptyReference())}
+                                onCite={insertCitation}
+                                onDelete={deleteReference}
+                                onSaveDraft={saveReferenceDraft}
+                            />
+                        ) : null
+                    }
+                    toolbar={
+                        <ContentToolbar
+                            title={activeItem.title}
+                            imageInputRef={imageInputRef}
+                            replaceFigureInputRef={replaceFigureInputRef}
+                            onAddParagraph={addParagraphBlock}
+                            onStartBulletList={() => startOrExtendList("bullet")}
+                            onStartNumberList={() => startOrExtendList("number")}
+                            onAddTable={addTable}
+                            onAddFigureClick={() => imageInputRef.current?.click()}
+                            onImageUpload={handleImageUpload}
+                            onReplaceFigure={handleReplaceFigure}
+                        />
+                    }
+                >
+                    {activeBlocks.map((block) => {
+                        const selected = activeBlockId === block.id;
+                        if (block.type === "paragraph") {
+                            return (
+                                <ParagraphBlock
+                                    key={block.id}
+                                    block={block}
+                                    selected={selected}
+                                    citationNumbers={citationNumbers}
+                                    paragraphCaretRef={paragraphCaretRef}
+                                    onSelect={() => setActiveBlockId(block.id)}
+                                    onChangeText={(text) =>
+                                        updateBlock(block.id, (current) =>
+                                            current.type === "paragraph"
+                                                ? { ...current, text }
+                                                : current
+                                        )
+                                    }
+                                    onRemove={() => removeBlock(block.id)}
                                 />
-                            ))}
-                        </div>
-                    ) : (
-                        <div
-                            className="w-12 h-full flex flex-col items-center pt-5 cursor-pointer hover:bg-slate-50"
-                            onClick={() => setIsStructureSidebarOpen(true)}
-                            title="Expand structure"
-                        >
-                            <div className="bg-[#6F155F]/10 p-2 rounded-lg text-[#6F155F]">
-                                <PanelLeftOpen className="h-5 w-5" />
-                            </div>
-                        </div>
-                    )}
-                </aside>
-
-                <main className="flex-1 min-h-0 bg-[#F4F2F5] overflow-y-auto px-3 sm:px-5 py-4 sm:py-5 flex justify-center items-start min-w-0">
-                    <div className="max-w-7xl w-full min-w-0 bg-white min-h-[calc(100vh-5.5rem)] border border-slate-200/80 shadow-[0_1px_2px_rgba(15,23,42,0.04),0_10px_28px_rgba(15,23,42,0.06)] rounded-xl">
-                        {showCoverMeta && (
-                            <div className="mx-6 sm:mx-8 mt-6 mb-4 border border-slate-200 rounded-lg p-4 bg-slate-50/90 space-y-3">
-                                <h3 className="text-sm font-semibold text-slate-800">Title Page &amp; Project Approval</h3>
-                                <p className="text-xs text-slate-500">
-                                    Formatting is fixed by ReportPeer. Edit only the project-specific fields below.
-                                </p>
-                                <div className="space-y-2">
-                                    <span className="text-xs font-medium text-slate-700">University Logo</span>
-                                    <p className="text-[11px] text-slate-500">
-                                        Uploaded logo is placed automatically at the template position and size. Leave empty to keep the reserved logo space.
-                                    </p>
-                                    <div className="flex items-center gap-3 flex-wrap">
-                                        <label className="text-xs border border-gray-200 hover:border-[#6F155F] hover:text-[#6F155F] rounded-md px-2.5 py-1.5 cursor-pointer">
-                                            Upload logo
-                                            <input
-                                                type="file"
-                                                accept="image/png,image/jpeg,image/jpg,image/webp,image/gif"
-                                                className="hidden"
-                                                onChange={(e) => {
-                                                    const file = e.target.files?.[0];
-                                                    e.target.value = "";
-                                                    if (!file) return;
-                                                    const reader = new FileReader();
-                                                    reader.onload = () => {
-                                                        const dataUrl = typeof reader.result === "string" ? reader.result : "";
-                                                        if (!dataUrl) return;
-                                                        setCoverMeta((m) => ({
-                                                            ...m,
-                                                            universityLogo: {
-                                                                dataUrl,
-                                                                fileName: file.name,
-                                                                mimeType: file.type || "image/png",
-                                                            },
-                                                        }));
-                                                    };
-                                                    reader.readAsDataURL(file);
-                                                }}
-                                            />
-                                        </label>
-                                        {coverMeta.universityLogo && (
-                                            <>
-                                                <img
-                                                    src={coverMeta.universityLogo.dataUrl}
-                                                    alt="University logo preview"
-                                                    className="h-12 w-12 object-contain border border-gray-200 rounded bg-white"
-                                                />
-                                                <button
-                                                    type="button"
-                                                    className="text-xs text-red-600"
-                                                    onClick={() => setCoverMeta((m) => ({ ...m, universityLogo: null }))}
-                                                >
-                                                    Remove
-                                                </button>
-                                            </>
-                                        )}
-                                    </div>
-                                </div>
-                                <label className="block text-xs text-slate-600">
-                                    Project Title
-                                    <input
-                                        className="mt-1 w-full border border-gray-200 rounded-md px-2 py-1.5 text-sm"
-                                        value={coverMeta.projectTitle}
-                                        onChange={(e) => setCoverMeta((m) => ({ ...m, projectTitle: e.target.value }))}
-                                    />
-                                </label>
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                    <label className="block text-xs text-slate-600">
-                                        Submission Month
-                                        <input
-                                            className="mt-1 w-full border border-gray-200 rounded-md px-2 py-1.5 text-sm"
-                                            value={coverMeta.submissionMonth}
-                                            onChange={(e) => setCoverMeta((m) => ({ ...m, submissionMonth: e.target.value }))}
-                                            placeholder="e.g. September"
-                                        />
-                                    </label>
-                                    <label className="block text-xs text-slate-600">
-                                        Submission Year
-                                        <input
-                                            className="mt-1 w-full border border-gray-200 rounded-md px-2 py-1.5 text-sm"
-                                            value={coverMeta.submissionYear}
-                                            onChange={(e) => setCoverMeta((m) => ({ ...m, submissionYear: e.target.value }))}
-                                            placeholder="e.g. 2026"
-                                        />
-                                    </label>
-                                </div>
-                                <label className="block text-xs text-slate-600">
-                                    Project Advisor
-                                    <input
-                                        className="mt-1 w-full border border-gray-200 rounded-md px-2 py-1.5 text-sm"
-                                        value={coverMeta.projectAdvisor}
-                                        onChange={(e) => setCoverMeta((m) => ({ ...m, projectAdvisor: e.target.value }))}
-                                    />
-                                </label>
-                                <div className="space-y-2">
-                                    <div className="flex items-center justify-between">
-                                        <span className="text-xs font-medium text-slate-700">Students (up to 4)</span>
-                                        <button
-                                            type="button"
-                                            className="text-xs text-[#6F155F] disabled:opacity-40"
-                                            disabled={coverMeta.teamMembers.length >= 4}
-                                            onClick={() =>
-                                                setCoverMeta((m) => ({
-                                                    ...m,
-                                                    teamMembers: m.teamMembers.length >= 4
-                                                        ? m.teamMembers
-                                                        : [...m.teamMembers, emptyTeamMember()],
-                                                }))
-                                            }
-                                        >
-                                            + Add student
-                                        </button>
-                                    </div>
-                                    {coverMeta.teamMembers.map((member, index) => (
-                                        <div key={index} className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                                            <input
-                                                className="border border-gray-200 rounded-md px-2 py-1.5 text-sm"
-                                                placeholder="Name"
-                                                value={member.name}
-                                                onChange={(e) =>
-                                                    setCoverMeta((m) => {
-                                                        const teamMembers = [...m.teamMembers];
-                                                        teamMembers[index] = { ...teamMembers[index], name: e.target.value };
-                                                        return { ...m, teamMembers };
-                                                    })
-                                                }
-                                            />
-                                            <input
-                                                className="border border-gray-200 rounded-md px-2 py-1.5 text-sm"
-                                                placeholder="Enrolment"
-                                                value={member.enrollment}
-                                                onChange={(e) =>
-                                                    setCoverMeta((m) => {
-                                                        const teamMembers = [...m.teamMembers];
-                                                        teamMembers[index] = { ...teamMembers[index], enrollment: e.target.value };
-                                                        return { ...m, teamMembers };
-                                                    })
-                                                }
-                                            />
-                                            <input
-                                                className="border border-gray-200 rounded-md px-2 py-1.5 text-sm"
-                                                placeholder="Seat Number"
-                                                value={member.seatNumber}
-                                                onChange={(e) =>
-                                                    setCoverMeta((m) => {
-                                                        const teamMembers = [...m.teamMembers];
-                                                        teamMembers[index] = { ...teamMembers[index], seatNumber: e.target.value };
-                                                        return { ...m, teamMembers };
-                                                    })
-                                                }
-                                            />
-                                        </div>
-                                    ))}
-                                </div>
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                    <label className="block text-xs text-slate-600">
-                                        Internal Advisor Name
-                                        <input
-                                            className="mt-1 w-full border border-gray-200 rounded-md px-2 py-1.5 text-sm"
-                                            value={coverMeta.internalExaminer}
-                                            onChange={(e) => setCoverMeta((m) => ({ ...m, internalExaminer: e.target.value }))}
-                                        />
-                                    </label>
-                                    <label className="block text-xs text-slate-600">
-                                        Internal Advisor Designation
-                                        <input
-                                            className="mt-1 w-full border border-gray-200 rounded-md px-2 py-1.5 text-sm"
-                                            value={coverMeta.internalExaminerDesignation}
-                                            onChange={(e) => setCoverMeta((m) => ({ ...m, internalExaminerDesignation: e.target.value }))}
-                                        />
-                                    </label>
-                                    <label className="block text-xs text-slate-600">
-                                        External Advisor Name
-                                        <input
-                                            className="mt-1 w-full border border-gray-200 rounded-md px-2 py-1.5 text-sm"
-                                            value={coverMeta.externalExaminer}
-                                            onChange={(e) => setCoverMeta((m) => ({ ...m, externalExaminer: e.target.value }))}
-                                        />
-                                    </label>
-                                    <label className="block text-xs text-slate-600">
-                                        External Advisor Designation
-                                        <input
-                                            className="mt-1 w-full border border-gray-200 rounded-md px-2 py-1.5 text-sm"
-                                            value={coverMeta.externalExaminerDesignation}
-                                            onChange={(e) => setCoverMeta((m) => ({ ...m, externalExaminerDesignation: e.target.value }))}
-                                        />
-                                    </label>
-                                    <label className="block text-xs text-slate-600 sm:col-span-2">
-                                        External Advisor Organization
-                                        <input
-                                            className="mt-1 w-full border border-gray-200 rounded-md px-2 py-1.5 text-sm"
-                                            value={coverMeta.externalExaminerOrganization}
-                                            onChange={(e) => setCoverMeta((m) => ({ ...m, externalExaminerOrganization: e.target.value }))}
-                                        />
-                                    </label>
-                                    <label className="block text-xs text-slate-600 sm:col-span-2">
-                                        Head of Department
-                                        <input
-                                            className="mt-1 w-full border border-gray-200 rounded-md px-2 py-1.5 text-sm"
-                                            value={coverMeta.headOfDepartment}
-                                            onChange={(e) => setCoverMeta((m) => ({ ...m, headOfDepartment: e.target.value }))}
-                                        />
-                                    </label>
-                                </div>
-                            </div>
-                        )}
-                        {showReferences && (
-                            <div className="mx-6 sm:mx-8 mt-6 mb-4 border border-slate-200 rounded-lg p-4 bg-slate-50/90 space-y-3">
-                                <div className="flex items-center justify-between gap-2">
-                                    <h3 className="text-sm font-semibold text-slate-800">References &amp; Citations</h3>
-                                    <button
-                                        type="button"
-                                        onClick={() => setReferenceDraft(emptyReference())}
-                                        className="text-[11px] border border-gray-200 bg-white rounded px-2 py-1 hover:border-[#6F155F] hover:text-[#6F155F]"
-                                    >
-                                        Add reference
-                                    </button>
-                                </div>
-                                <p className="text-xs text-slate-500">
-                                    Numbers are assigned automatically by first citation order. Place the caret in a
-                                    paragraph, then use Cite. Only cited references appear in the final References section.
-                                </p>
-
-                                {references.length === 0 ? (
-                                    <p className="text-xs text-slate-400">No references yet.</p>
-                                ) : (
-                                    <ul className="space-y-2">
-                                        {references.map((reference) => {
-                                            const number = citationNumbers.get(reference.id);
-                                            return (
-                                                <li
-                                                    key={reference.id}
-                                                    className="flex items-start gap-2 rounded border border-gray-200 bg-white px-2.5 py-2"
-                                                >
-                                                    <span
-                                                        className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium ${number ? "bg-[#F2EBF1] text-[#6F155F]" : "bg-slate-100 text-slate-400"}`}
-                                                        title={number ? `Cited as [${number}]` : "Not cited yet"}
-                                                    >
-                                                        {number ? `[${number}]` : "—"}
-                                                    </span>
-                                                    <div className="min-w-0 flex-1">
-                                                        <div className="text-xs font-serif text-slate-700 break-words">
-                                                            {formatReference(reference)}
-                                                        </div>
-                                                        <div className="text-[10px] uppercase tracking-wider text-slate-400 mt-0.5">
-                                                            {REFERENCE_TYPES.find((t) => t.value === reference.type)?.label || "Other"}
-                                                        </div>
-                                                    </div>
-                                                    <div className="flex shrink-0 items-center gap-1">
-                                                        <button
-                                                            type="button"
-                                                            title="Insert citation at caret"
-                                                            onClick={() => insertCitation(reference)}
-                                                            className="text-[11px] border border-gray-200 rounded px-2 py-1 hover:border-[#6F155F] hover:text-[#6F155F]"
-                                                        >
-                                                            Cite
-                                                        </button>
-                                                        <button
-                                                            type="button"
-                                                            title="Edit reference"
-                                                            onClick={() => setReferenceDraft({ ...reference })}
-                                                            className="p-1 text-gray-400 hover:text-[#6F155F]"
-                                                        >
-                                                            <Pencil className="h-3.5 w-3.5" />
-                                                        </button>
-                                                        <button
-                                                            type="button"
-                                                            title="Delete reference"
-                                                            onClick={() => deleteReference(reference)}
-                                                            className="p-1 text-gray-300 hover:text-red-500"
-                                                        >
-                                                            <Trash2 className="h-3.5 w-3.5" />
-                                                        </button>
-                                                    </div>
-                                                </li>
-                                            );
-                                        })}
-                                    </ul>
-                                )}
-
-                                {referenceDraft && (
-                                    <div className="rounded border border-[#6F155F]/30 bg-white p-3 space-y-2">
-                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                            <label className="block text-xs text-slate-600">
-                                                Type
-                                                <select
-                                                    className="mt-1 w-full border border-gray-200 rounded-md px-2 py-1.5 text-sm bg-white"
-                                                    value={referenceDraft.type}
-                                                    onChange={(e) =>
-                                                        setReferenceDraft((draft) =>
-                                                            draft ? { ...draft, type: e.target.value as ReferenceType } : draft
-                                                        )
-                                                    }
-                                                >
-                                                    {REFERENCE_TYPES.map((option) => (
-                                                        <option key={option.value} value={option.value}>
-                                                            {option.label}
-                                                        </option>
-                                                    ))}
-                                                </select>
-                                            </label>
-                                            <label className="block text-xs text-slate-600">
-                                                Year
-                                                <input
-                                                    className="mt-1 w-full border border-gray-200 rounded-md px-2 py-1.5 text-sm"
-                                                    value={referenceDraft.year}
-                                                    onChange={(e) =>
-                                                        setReferenceDraft((draft) => (draft ? { ...draft, year: e.target.value } : draft))
-                                                    }
-                                                    placeholder="e.g. 2024"
-                                                />
-                                            </label>
-                                            <label className="block text-xs text-slate-600 sm:col-span-2">
-                                                Authors
-                                                <input
-                                                    className="mt-1 w-full border border-gray-200 rounded-md px-2 py-1.5 text-sm"
-                                                    value={referenceDraft.authors}
-                                                    onChange={(e) =>
-                                                        setReferenceDraft((draft) => (draft ? { ...draft, authors: e.target.value } : draft))
-                                                    }
-                                                    placeholder="A. Khan, B. Ahmed"
-                                                />
-                                            </label>
-                                            <label className="block text-xs text-slate-600 sm:col-span-2">
-                                                Title
-                                                <input
-                                                    className="mt-1 w-full border border-gray-200 rounded-md px-2 py-1.5 text-sm"
-                                                    value={referenceDraft.title}
-                                                    onChange={(e) =>
-                                                        setReferenceDraft((draft) => (draft ? { ...draft, title: e.target.value } : draft))
-                                                    }
-                                                />
-                                            </label>
-                                            <label className="block text-xs text-slate-600">
-                                                Publisher / Journal / Site
-                                                <input
-                                                    className="mt-1 w-full border border-gray-200 rounded-md px-2 py-1.5 text-sm"
-                                                    value={referenceDraft.source}
-                                                    onChange={(e) =>
-                                                        setReferenceDraft((draft) => (draft ? { ...draft, source: e.target.value } : draft))
-                                                    }
-                                                />
-                                            </label>
-                                            <label className="block text-xs text-slate-600">
-                                                Volume / Pages / Edition
-                                                <input
-                                                    className="mt-1 w-full border border-gray-200 rounded-md px-2 py-1.5 text-sm"
-                                                    value={referenceDraft.details}
-                                                    onChange={(e) =>
-                                                        setReferenceDraft((draft) => (draft ? { ...draft, details: e.target.value } : draft))
-                                                    }
-                                                    placeholder="vol. 12, no. 3, pp. 45-52"
-                                                />
-                                            </label>
-                                            <label className="block text-xs text-slate-600">
-                                                URL
-                                                <input
-                                                    className="mt-1 w-full border border-gray-200 rounded-md px-2 py-1.5 text-sm"
-                                                    value={referenceDraft.url}
-                                                    onChange={(e) =>
-                                                        setReferenceDraft((draft) => (draft ? { ...draft, url: e.target.value } : draft))
-                                                    }
-                                                />
-                                            </label>
-                                            <label className="block text-xs text-slate-600">
-                                                Accessed on
-                                                <input
-                                                    className="mt-1 w-full border border-gray-200 rounded-md px-2 py-1.5 text-sm"
-                                                    value={referenceDraft.accessed}
-                                                    onChange={(e) =>
-                                                        setReferenceDraft((draft) => (draft ? { ...draft, accessed: e.target.value } : draft))
-                                                    }
-                                                    placeholder="12-Sep-2026"
-                                                />
-                                            </label>
-                                        </div>
-                                        <div className="flex items-center gap-2">
-                                            <button
-                                                type="button"
-                                                onClick={saveReferenceDraft}
-                                                className="text-xs rounded-md bg-[#6F155F] hover:bg-[#57104b] text-white px-3 py-1.5 font-medium"
-                                            >
-                                                Save reference
-                                            </button>
-                                            <button
-                                                type="button"
-                                                onClick={() => setReferenceDraft(null)}
-                                                className="text-xs text-slate-500 hover:text-[#6F155F] px-2 py-1.5"
-                                            >
-                                                Cancel
-                                            </button>
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
-                        )}
-                        <div className="min-w-0 max-w-full">
-                            <div className="sticky top-0 z-20 bg-white rounded-t-xl shadow-[0_2px_8px_rgba(15,23,42,0.06)]">
-                                <div className="px-3 sm:px-5 lg:px-8 py-2 flex items-center gap-1.5 sm:gap-2 flex-wrap bg-[#6F155F] border-b border-[#57104b] rounded-t-xl">
-                                    <button
-                                        type="button"
-                                        onClick={addParagraphBlock}
-                                        className="text-xs flex items-center gap-1.5 border border-white/35 bg-white text-[#6F155F] hover:bg-[#F2EBF1] rounded-md px-2 sm:px-2.5 py-1.5 font-medium shadow-sm transition-colors"
-                                    >
-                                        <FileText className="h-3.5 w-3.5" />
-                                        <span className="hidden sm:inline">Paragraph</span>
-                                    </button>
-                                    <button
-                                        type="button"
-                                        onClick={() => startOrExtendList("bullet")}
-                                        className="text-xs flex items-center gap-1.5 border border-white/35 bg-white text-[#6F155F] hover:bg-[#F2EBF1] rounded-md px-2 sm:px-2.5 py-1.5 font-medium shadow-sm transition-colors"
-                                        title="Bullet list"
-                                    >
-                                        <List className="h-3.5 w-3.5" />
-                                        <span className="hidden md:inline">Bullet List</span>
-                                    </button>
-                                    <button
-                                        type="button"
-                                        onClick={() => startOrExtendList("number")}
-                                        className="text-xs flex items-center gap-1.5 border border-white/35 bg-white text-[#6F155F] hover:bg-[#F2EBF1] rounded-md px-2 sm:px-2.5 py-1.5 font-medium shadow-sm transition-colors"
-                                        title="Numbered list"
-                                    >
-                                        <ListOrdered className="h-3.5 w-3.5" />
-                                        <span className="hidden md:inline">Numbered List</span>
-                                    </button>
-                                    <button
-                                        type="button"
-                                        onClick={addTable}
-                                        className="text-xs flex items-center gap-1.5 border border-white/35 bg-white text-[#6F155F] hover:bg-[#F2EBF1] rounded-md px-2 sm:px-2.5 py-1.5 font-medium shadow-sm transition-colors"
-                                        title="Add table"
-                                    >
-                                        <Table2 className="h-3.5 w-3.5" />
-                                        <span className="hidden md:inline">Add Table</span>
-                                    </button>
-                                    <button
-                                        type="button"
-                                        onClick={() => imageInputRef.current?.click()}
-                                        className="text-xs flex items-center gap-1.5 border border-white/35 bg-white text-[#6F155F] hover:bg-[#F2EBF1] rounded-md px-2 sm:px-2.5 py-1.5 font-medium shadow-sm transition-colors"
-                                        title="Add image or figure"
-                                    >
-                                        <ImagePlus className="h-3.5 w-3.5" />
-                                        <span className="hidden md:inline">Add Figure</span>
-                                    </button>
-                                    <input
-                                        ref={imageInputRef}
-                                        type="file"
-                                        accept="image/*"
-                                        className="hidden"
-                                        onChange={handleImageUpload}
-                                    />
-                                    <input
-                                        ref={replaceFigureInputRef}
-                                        type="file"
-                                        accept="image/*"
-                                        className="hidden"
-                                        onChange={handleReplaceFigure}
-                                    />
-                                </div>
-                                <h2 className="text-[1.75rem] leading-snug font-serif text-slate-900 px-5 sm:px-8 pt-4 pb-3.5 border-b border-slate-100">{activeItem.title}</h2>
-                            </div>
-                            <div className="px-5 sm:px-8 pt-4 pb-10 sm:pb-12 min-w-0">
-                            <div className="space-y-6 min-w-0">
-                                {activeBlocks.map((block) => {
-                                    const selected = activeBlockId === block.id;
-                                    if (block.type === "paragraph") {
-                                        return (
-                                            <div
-                                                key={block.id}
-                                                className={`group relative -mx-3 rounded-md px-3 py-1 transition-colors ${selected ? "bg-[#F2EBF1]/50" : "hover:bg-slate-50"}`}
-                                                onClick={() => setActiveBlockId(block.id)}
-                                            >
-                                                <textarea
-                                                    ref={(el) => {
-                                                        autoGrowTextarea(el);
-                                                    }}
-                                                    data-focus-id={block.id}
-                                                    value={block.text}
-                                                    rows={1}
-                                                    onFocus={() => setActiveBlockId(block.id)}
-                                                    onSelect={(e) => {
-                                                        const el = e.currentTarget;
-                                                        paragraphCaretRef.current = {
-                                                            blockId: block.id,
-                                                            start: el.selectionStart,
-                                                            end: el.selectionEnd,
-                                                        };
-                                                    }}
-                                                    onChange={(e) => {
-                                                        autoGrowTextarea(e.currentTarget);
-                                                        paragraphCaretRef.current = {
-                                                            blockId: block.id,
-                                                            start: e.currentTarget.selectionStart,
-                                                            end: e.currentTarget.selectionEnd,
-                                                        };
-                                                        updateBlock(block.id, (current) =>
-                                                            current.type === "paragraph"
-                                                                ? { ...current, text: e.target.value }
-                                                                : current
-                                                        );
-                                                    }}
-                                                    className="w-full resize-none overflow-hidden bg-transparent font-serif text-[15px] leading-[1.9] text-justify text-slate-800 placeholder:text-slate-300 focus:outline-none"
-                                                    placeholder="Start writing..."
-                                                />
-                                                <button
-                                                    type="button"
-                                                    title="Delete this paragraph"
-                                                    onClick={() => removeBlock(block.id)}
-                                                    className={`absolute top-0.5 right-0 p-1 text-gray-300 transition-opacity hover:text-red-500 group-hover:opacity-100 ${selected ? "opacity-100" : "opacity-0"}`}
-                                                >
-                                                    <Trash2 className="h-3.5 w-3.5" />
-                                                </button>
-                                                {selected && block.text.includes("[[ref:") && (
-                                                    <p className="mt-1 border-l-2 border-[#6F155F]/30 pl-2 text-[11px] leading-relaxed text-slate-400">
-                                                        Preview: {resolveCitations(block.text, citationNumbers)}
-                                                    </p>
-                                                )}
-                                            </div>
-                                        );
+                            );
+                        }
+                        if (block.type === "list") {
+                            return (
+                                <ListBlock
+                                    key={block.id}
+                                    block={block}
+                                    selected={selected}
+                                    onSelect={() => setActiveBlockId(block.id)}
+                                    onRemove={() => removeBlock(block.id)}
+                                    onItemFocus={() => setActiveBlockId(block.id)}
+                                    onItemChange={(itemId, patch) =>
+                                        updateListItem(block.id, itemId, patch)
                                     }
-                                    if (block.type === "list") {
-                                        const numberLabels =
-                                            block.listType === "number" ? listNumberLabels(block.items) : [];
-                                        return (
-                                            <div
-                                                key={block.id}
-                                                className={`-mx-3 space-y-1.5 rounded-md px-3 py-2 transition-colors ${selected ? "bg-[#F2EBF1]/50" : ""}`}
-                                                onClick={() => setActiveBlockId(block.id)}
-                                            >
-                                                <div className="flex items-center justify-between">
-                                                    <div className="text-[10px] uppercase tracking-wider text-gray-400">
-                                                        {block.listType === "number" ? "Numbered list" : "Bullet list"}
-                                                    </div>
-                                                    <button type="button" title="Remove list" onClick={() => removeBlock(block.id)} className="p-1 text-gray-300 hover:text-red-500">
-                                                        <Trash2 className="h-3.5 w-3.5" />
-                                                    </button>
-                                                </div>
-                                                {block.items.map((item, itemIndex) => (
-                                                    <div
-                                                        key={item.id}
-                                                        className="flex items-center gap-1"
-                                                        style={{ paddingLeft: `${(item.level - 1) * 20}px` }}
-                                                    >
-                                                        <span className="w-10 shrink-0 text-[11px] text-slate-400">
-                                                            {block.listType === "number"
-                                                                ? numberLabels[itemIndex]
-                                                                : item.level === 1 ? "•" : item.level === 2 ? "o" : "▪"}
-                                                        </span>
-                                                        <input
-                                                            data-focus-id={item.id}
-                                                            value={item.text}
-                                                            onFocus={() => setActiveBlockId(block.id)}
-                                                            onChange={(e) => updateListItem(block.id, item.id, { text: e.target.value })}
-                                                            onKeyDown={(e) => handleListItemKeyDown(e, block.id, itemIndex, item)}
-                                                            className="flex-1 text-sm font-serif border-b border-gray-100 focus:border-[#6F155F] focus:outline-none py-1"
-                                                            placeholder="List item"
-                                                        />
-                                                        <button type="button" title="Decrease level" onClick={() => changeListLevel(block.id, itemIndex, -1)} className="p-1 text-gray-400 hover:text-[#6F155F]">
-                                                            <IndentDecrease className="h-3.5 w-3.5" />
-                                                        </button>
-                                                        <button type="button" title="Increase level" onClick={() => changeListLevel(block.id, itemIndex, 1)} className="p-1 text-gray-400 hover:text-[#6F155F]">
-                                                            <IndentIncrease className="h-3.5 w-3.5" />
-                                                        </button>
-                                                        <button type="button" title="Remove item" onClick={() => removeListItem(block.id, item.id)} className="p-1 text-gray-300 hover:text-red-500">
-                                                            <Trash2 className="h-3.5 w-3.5" />
-                                                        </button>
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        );
+                                    onItemKeyDown={handleListItemKeyDown}
+                                    onChangeLevel={(itemIndex, delta) =>
+                                        changeListLevel(block.id, itemIndex, delta)
                                     }
-                                    if (block.type === "table") {
-                                        const tableActive = selected && selectedTableCells.length > 0;
-                                        const canMerge = canMergeTableCells(block, selectedTableCells);
-                                        const canUnmerge = selectedTableCells.some((ref) =>
-                                            canUnmergeTableCell(block, ref)
-                                        );
-                                        const primaryRef = selectedTableCells[0];
-                                        const primaryCell = primaryRef
-                                            ? getTableCell(block, primaryRef)
-                                            : null;
-                                        const isCellSelected = (ref: TableCellRef) =>
-                                            selectedTableCells.some(
-                                                (cell) => cell.row === ref.row && cell.col === ref.col
-                                            );
-                                        return (
-                                            <div
-                                                key={block.id}
-                                                className={`-mx-3 max-w-full min-w-0 rounded-md px-3 py-2 transition-colors ${selected ? "bg-[#F2EBF1]/50" : ""}`}
-                                                onClick={() => setActiveBlockId(block.id)}
-                                            >
-                                                <div className="flex items-center justify-between mb-2">
-                                                    <div className="text-[10px] uppercase tracking-wider text-gray-400">Table</div>
-                                                    <button type="button" title="Remove table" onClick={() => removeBlock(block.id)} className="p-1 text-gray-300 hover:text-red-500">
-                                                        <Trash2 className="h-3.5 w-3.5" />
-                                                    </button>
-                                                </div>
-                                                <input
-                                                    value={block.caption}
-                                                    onFocus={() => setActiveBlockId(block.id)}
-                                                    onChange={(e) => updateTableBlock(block.id, (current) => ({ ...current, caption: e.target.value }))}
-                                                    className="w-full text-sm font-serif border-b border-gray-100 focus:border-[#6F155F] focus:outline-none py-1 mb-3"
-                                                    placeholder="Table caption (number is assigned automatically)"
-                                                />
-                                                {tableActive ? (
-                                                    <div
-                                                        className="mb-2 flex flex-wrap items-center gap-1 rounded border border-gray-200 bg-gray-50 px-2 py-1.5"
-                                                        onMouseDown={(e) => e.preventDefault()}
-                                                    >
-                                                        <label className="flex items-center gap-1 text-[11px] text-gray-500" title="Cell shading">
-                                                            Fill
-                                                            <input
-                                                                type="color"
-                                                                value={primaryCell?.background || "#ffffff"}
-                                                                onChange={(e) =>
-                                                                    applyFormatToSelectedCells(block, {
-                                                                        background: e.target.value,
-                                                                    })
-                                                                }
-                                                                className="h-6 w-7 cursor-pointer rounded border border-gray-200 bg-white p-0"
-                                                            />
-                                                        </label>
-                                                        <label className="flex items-center gap-1 text-[11px] text-gray-500" title="Text color">
-                                                            Text
-                                                            <input
-                                                                type="color"
-                                                                value={primaryCell?.textColor || "#000000"}
-                                                                onChange={(e) =>
-                                                                    applyFormatToSelectedCells(block, {
-                                                                        textColor: e.target.value,
-                                                                    })
-                                                                }
-                                                                className="h-6 w-7 cursor-pointer rounded border border-gray-200 bg-white p-0"
-                                                            />
-                                                        </label>
-                                                        <button
-                                                            type="button"
-                                                            title="Bold"
-                                                            onClick={() => toggleBoldSelected(block)}
-                                                            className={`rounded border px-1.5 py-1 ${primaryCell?.bold ? "border-[#6F155F] text-[#6F155F] bg-white" : "border-gray-200 text-gray-600 hover:border-[#6F155F]"}`}
-                                                        >
-                                                            <Bold className="h-3.5 w-3.5" />
-                                                        </button>
-                                                        <button type="button" title="Align left" onClick={() => setAlignSelected(block, "left")} className={`rounded border px-1.5 py-1 ${primaryCell?.align === "left" ? "border-[#6F155F] text-[#6F155F]" : "border-gray-200 text-gray-600"}`}>
-                                                            <AlignLeft className="h-3.5 w-3.5" />
-                                                        </button>
-                                                        <button type="button" title="Align center" onClick={() => setAlignSelected(block, "center")} className={`rounded border px-1.5 py-1 ${primaryCell?.align === "center" ? "border-[#6F155F] text-[#6F155F]" : "border-gray-200 text-gray-600"}`}>
-                                                            <AlignCenter className="h-3.5 w-3.5" />
-                                                        </button>
-                                                        <button type="button" title="Align right" onClick={() => setAlignSelected(block, "right")} className={`rounded border px-1.5 py-1 ${primaryCell?.align === "right" ? "border-[#6F155F] text-[#6F155F]" : "border-gray-200 text-gray-600"}`}>
-                                                            <AlignRight className="h-3.5 w-3.5" />
-                                                        </button>
-                                                        <button
-                                                            type="button"
-                                                            title="Merge cells"
-                                                            disabled={!canMerge}
-                                                            onClick={() => mergeSelectedCells(block)}
-                                                            className="rounded border border-gray-200 px-2 py-1 text-[11px] text-gray-600 disabled:opacity-40 hover:border-[#6F155F] hover:text-[#6F155F]"
-                                                        >
-                                                            Merge
-                                                        </button>
-                                                        <button
-                                                            type="button"
-                                                            title="Unmerge cells"
-                                                            disabled={!canUnmerge}
-                                                            onClick={() => unmergeSelectedCell(block)}
-                                                            className="rounded border border-gray-200 px-2 py-1 text-[11px] text-gray-600 disabled:opacity-40 hover:border-[#6F155F] hover:text-[#6F155F]"
-                                                        >
-                                                            Unmerge
-                                                        </button>
-                                                        <span className="text-[10px] text-gray-400 ml-1">Shift/Ctrl+click to select</span>
-                                                    </div>
-                                                ) : null}
-                                                <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain">
-                                                    <table className="w-full max-w-full border-collapse text-sm font-serif table-fixed">
-                                                        <thead>
-                                                            <tr>
-                                                                {block.columns.map((column, colIndex) => {
-                                                                    const cell = normalizeTableCell(column);
-                                                                    if (cell.hidden) return null;
-                                                                    const ref = { row: -1, col: colIndex };
-                                                                    const selectedCell = isCellSelected(ref);
-                                                                    return (
-                                                                        <th
-                                                                            key={`${block.id}-col-${colIndex}`}
-                                                                            colSpan={cell.colspan || 1}
-                                                                            rowSpan={cell.rowspan || 1}
-                                                                            className={`border border-gray-200 p-1 align-top min-w-0 ${selectedCell ? "ring-2 ring-inset ring-[#6F155F]" : ""}`}
-                                                                            style={{ backgroundColor: cell.background || undefined }}
-                                                                            onMouseDown={(e) => {
-                                                                                if (e.button !== 0) return;
-                                                                                e.stopPropagation();
-                                                                                selectTableCell(block.id, ref, e);
-                                                                            }}
-                                                                        >
-                                                                            <div className="flex items-center gap-1 min-w-0">
-                                                                                <input
-                                                                                    value={cell.text}
-                                                                                    onFocus={() => {
-                                                                                        setActiveBlockId(block.id);
-                                                                                        setSelectedTableCells((prev) =>
-                                                                                            prev.some((c) => c.row === ref.row && c.col === ref.col)
-                                                                                                ? prev
-                                                                                                : [ref]
-                                                                                        );
-                                                                                        setTableSelectionAnchor((prev) => prev ?? ref);
-                                                                                    }}
-                                                                                    onChange={(e) =>
-                                                                                        updateTableBlock(block.id, (current) =>
-                                                                                            setTableCell(current, ref, {
-                                                                                                ...getTableCell(current, ref),
-                                                                                                text: e.target.value,
-                                                                                            })
-                                                                                        )
-                                                                                    }
-                                                                                    className="w-full min-w-0 focus:outline-none bg-transparent"
-                                                                                    style={{
-                                                                                        color: cell.textColor || undefined,
-                                                                                        fontWeight:
-                                                                                            cell.bold === false
-                                                                                                ? 400
-                                                                                                : cell.bold
-                                                                                                  ? 700
-                                                                                                  : 600,
-                                                                                        textAlign: cell.align || "center",
-                                                                                    }}
-                                                                                    placeholder={`Column ${colIndex + 1}`}
-                                                                                />
-                                                                                <button
-                                                                                    type="button"
-                                                                                    title="Remove column"
-                                                                                    onMouseDown={(e) => e.stopPropagation()}
-                                                                                    onClick={(e) => {
-                                                                                        e.stopPropagation();
-                                                                                        removeTableColumn(block, colIndex);
-                                                                                    }}
-                                                                                    className="text-gray-300 hover:text-red-500 shrink-0"
-                                                                                >
-                                                                                    ×
-                                                                                </button>
-                                                                            </div>
-                                                                        </th>
-                                                                    );
-                                                                })}
-                                                                <th className="w-8 p-0 border-0" aria-hidden />
-                                                            </tr>
-                                                        </thead>
-                                                        <tbody>
-                                                            {block.data.map((row, rowIndex) => (
-                                                                <tr key={`${block.id}-row-${rowIndex}`}>
-                                                                    {row.map((rawCell, colIndex) => {
-                                                                        const cell = normalizeTableCell(rawCell);
-                                                                        if (cell.hidden) return null;
-                                                                        const ref = { row: rowIndex, col: colIndex };
-                                                                        const selectedCell = isCellSelected(ref);
-                                                                        return (
-                                                                            <td
-                                                                                key={`${block.id}-cell-${rowIndex}-${colIndex}`}
-                                                                                colSpan={cell.colspan || 1}
-                                                                                rowSpan={cell.rowspan || 1}
-                                                                                className={`border border-gray-200 p-1 align-top min-w-0 ${selectedCell ? "ring-2 ring-inset ring-[#6F155F]" : ""}`}
-                                                                                style={{ backgroundColor: cell.background || undefined }}
-                                                                                onMouseDown={(e) => {
-                                                                                    if (e.button !== 0) return;
-                                                                                    e.stopPropagation();
-                                                                                    selectTableCell(block.id, ref, e);
-                                                                                }}
-                                                                            >
-                                                                                <input
-                                                                                    value={cell.text}
-                                                                                    onFocus={() => {
-                                                                                        setActiveBlockId(block.id);
-                                                                                        setSelectedTableCells((prev) =>
-                                                                                            prev.some((c) => c.row === ref.row && c.col === ref.col)
-                                                                                                ? prev
-                                                                                                : [ref]
-                                                                                        );
-                                                                                        setTableSelectionAnchor((prev) => prev ?? ref);
-                                                                                    }}
-                                                                                    onChange={(e) =>
-                                                                                        updateTableBlock(block.id, (current) =>
-                                                                                            setTableCell(current, ref, {
-                                                                                                ...getTableCell(current, ref),
-                                                                                                text: e.target.value,
-                                                                                            })
-                                                                                        )
-                                                                                    }
-                                                                                    className="w-full min-w-0 focus:outline-none bg-transparent"
-                                                                                    style={{
-                                                                                        color: cell.textColor || undefined,
-                                                                                        fontWeight:
-                                                                                            cell.bold === false
-                                                                                                ? 400
-                                                                                                : cell.bold
-                                                                                                  ? 700
-                                                                                                  : undefined,
-                                                                                        textAlign: cell.align || "left",
-                                                                                    }}
-                                                                                    placeholder="Cell"
-                                                                                />
-                                                                            </td>
-                                                                        );
-                                                                    })}
-                                                                    <td className="p-1 w-8 align-middle">
-                                                                        <button
-                                                                            type="button"
-                                                                            title="Remove row"
-                                                                            onClick={() => removeTableRow(block, rowIndex)}
-                                                                            className="text-gray-300 hover:text-red-500"
-                                                                        >
-                                                                            <Trash2 className="h-3.5 w-3.5" />
-                                                                        </button>
-                                                                    </td>
-                                                                </tr>
-                                                            ))}
-                                                        </tbody>
-                                                    </table>
-                                                </div>
-                                                <div className="flex gap-2 mt-3">
-                                                    <button type="button" onClick={() => addTableRow(block)} className="text-[11px] border border-gray-200 rounded px-2 py-1 hover:border-[#6F155F] hover:text-[#6F155F]">
-                                                        Add row
-                                                    </button>
-                                                    <button type="button" onClick={() => addTableColumn(block)} className="text-[11px] border border-gray-200 rounded px-2 py-1 hover:border-[#6F155F] hover:text-[#6F155F]">
-                                                        Add column
-                                                    </button>
-                                                </div>
-                                            </div>
-                                        );
+                                    onRemoveItem={(itemId) => removeListItem(block.id, itemId)}
+                                />
+                            );
+                        }
+                        if (block.type === "table") {
+                            return (
+                                <TableBlock
+                                    key={block.id}
+                                    block={block}
+                                    selected={selected}
+                                    selectedTableCells={selectedTableCells}
+                                    setSelectedTableCells={setSelectedTableCells}
+                                    setTableSelectionAnchor={setTableSelectionAnchor}
+                                    onSelect={() => setActiveBlockId(block.id)}
+                                    onRemove={() => removeBlock(block.id)}
+                                    onCaptionChange={(caption) =>
+                                        updateTableBlock(block.id, (current) => ({
+                                            ...current,
+                                            caption,
+                                        }))
                                     }
-                                    return (
-                                        <div
-                                            key={block.id}
-                                            className={`-mx-3 rounded-md px-3 py-2 transition-colors ${selected ? "bg-[#F2EBF1]/50" : ""}`}
-                                            onClick={() => setActiveBlockId(block.id)}
-                                        >
-                                            <div className="flex items-center justify-between mb-2 gap-2">
-                                                <div className="text-[10px] uppercase tracking-wider text-gray-400">Figure</div>
-                                                <div className="flex items-center gap-1">
-                                                    <button
-                                                        type="button"
-                                                        title="Replace image"
-                                                        onClick={(e) => {
-                                                            e.stopPropagation();
-                                                            setReplacingFigureId(block.id);
-                                                            replaceFigureInputRef.current?.click();
-                                                        }}
-                                                        className="text-[11px] border border-gray-200 rounded px-2 py-1 hover:border-[#6F155F] hover:text-[#6F155F]"
-                                                    >
-                                                        Replace
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        title="Remove figure"
-                                                        onClick={() => removeBlock(block.id)}
-                                                        className="p-1 text-gray-300 hover:text-red-500"
-                                                    >
-                                                        <Trash2 className="h-3.5 w-3.5" />
-                                                    </button>
-                                                </div>
-                                            </div>
-                                            {block.dataUrl ? (
-                                                <div
-                                                    className={`mb-3 flex ${
-                                                        (block.align || "center") === "left"
-                                                            ? "justify-start"
-                                                            : (block.align || "center") === "right"
-                                                              ? "justify-end"
-                                                              : "justify-center"
-                                                    }`}
-                                                >
-                                                    <img
-                                                        src={block.dataUrl}
-                                                        alt={block.caption || block.fileName}
-                                                        className="rounded border border-gray-100 object-contain"
-                                                        style={{
-                                                            width: `${Math.max(40, Math.min(100, block.widthPercent || 100))}%`,
-                                                            maxWidth: "100%",
-                                                            height: "auto",
-                                                        }}
-                                                    />
-                                                </div>
-                                            ) : (
-                                                <div className="mb-3 text-xs text-slate-400 border border-dashed border-gray-200 rounded p-6 text-center">
-                                                    No image — use Replace to upload one.
-                                                </div>
-                                            )}
-                                            <div className="mb-3 flex flex-wrap items-center gap-2 rounded border border-gray-100 bg-gray-50 px-2 py-1.5">
-                                                <label className="flex items-center gap-2 text-[11px] text-gray-500 min-w-[160px] flex-1">
-                                                    Size
-                                                    <input
-                                                        type="range"
-                                                        min={40}
-                                                        max={100}
-                                                        step={5}
-                                                        value={Math.max(40, Math.min(100, block.widthPercent || 100))}
-                                                        onChange={(e) =>
-                                                            updateFigureBlock(block.id, {
-                                                                widthPercent: Number(e.target.value),
-                                                            })
-                                                        }
-                                                        className="flex-1 accent-[#6F155F]"
-                                                    />
-                                                    <span className="w-10 text-right tabular-nums">{Math.max(40, Math.min(100, block.widthPercent || 100))}%</span>
-                                                </label>
-                                                <div className="flex items-center gap-1">
-                                                    <button
-                                                        type="button"
-                                                        title="Align left"
-                                                        onClick={() => updateFigureBlock(block.id, { align: "left" })}
-                                                        className={`rounded border px-1.5 py-1 ${(block.align || "center") === "left" ? "border-[#6F155F] text-[#6F155F] bg-white" : "border-gray-200 text-gray-600"}`}
-                                                    >
-                                                        <AlignLeft className="h-3.5 w-3.5" />
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        title="Align center"
-                                                        onClick={() => updateFigureBlock(block.id, { align: "center" })}
-                                                        className={`rounded border px-1.5 py-1 ${(block.align || "center") === "center" ? "border-[#6F155F] text-[#6F155F] bg-white" : "border-gray-200 text-gray-600"}`}
-                                                    >
-                                                        <AlignCenter className="h-3.5 w-3.5" />
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        title="Align right"
-                                                        onClick={() => updateFigureBlock(block.id, { align: "right" })}
-                                                        className={`rounded border px-1.5 py-1 ${(block.align || "center") === "right" ? "border-[#6F155F] text-[#6F155F] bg-white" : "border-gray-200 text-gray-600"}`}
-                                                    >
-                                                        <AlignRight className="h-3.5 w-3.5" />
-                                                    </button>
-                                                </div>
-                                            </div>
-                                            <div className="text-[11px] text-slate-400 mb-1 truncate">{block.fileName}</div>
-                                            <div className="flex items-baseline gap-1.5">
-                                                <span className="text-sm font-serif text-slate-500 shrink-0">Figure #.#:</span>
-                                                <input
-                                                    value={block.caption}
-                                                    onFocus={() => setActiveBlockId(block.id)}
-                                                    onChange={(e) =>
-                                                        updateFigureBlock(block.id, { caption: e.target.value })
-                                                    }
-                                                    className="w-full text-sm font-serif border-b border-gray-100 focus:border-[#6F155F] focus:outline-none py-1"
-                                                    placeholder="Caption text (number assigned automatically)"
-                                                />
-                                            </div>
-                                        </div>
-                                    );
-                                })}
-                            </div>
-                            </div>
-                        </div>
-                    </div>
-                </main>
+                                    onUpdateTable={(updater) =>
+                                        updateTableBlock(block.id, updater)
+                                    }
+                                    onSelectCell={(ref, e) =>
+                                        selectTableCell(block.id, ref, e)
+                                    }
+                                    onApplyFormat={(patch) =>
+                                        applyFormatToSelectedCells(block, patch)
+                                    }
+                                    onToggleBold={() => toggleBoldSelected(block)}
+                                    onSetAlign={(align) => setAlignSelected(block, align)}
+                                    onMerge={() => mergeSelectedCells(block)}
+                                    onUnmerge={() => unmergeSelectedCell(block)}
+                                    onRemoveColumn={(colIndex) =>
+                                        removeTableColumn(block, colIndex)
+                                    }
+                                    onRemoveRow={(rowIndex) => removeTableRow(block, rowIndex)}
+                                    onAddRow={() => addTableRow(block)}
+                                    onAddColumn={() => addTableColumn(block)}
+                                />
+                            );
+                        }
+                        return (
+                            <FigureBlock
+                                key={block.id}
+                                block={block}
+                                selected={selected}
+                                onSelect={() => setActiveBlockId(block.id)}
+                                onRemove={() => removeBlock(block.id)}
+                                onReplaceClick={() => {
+                                    setReplacingFigureId(block.id);
+                                    replaceFigureInputRef.current?.click();
+                                }}
+                                onUpdate={(patch) => updateFigureBlock(block.id, patch)}
+                            />
+                        );
+                    })}
+                </SectionCanvas>
 
                 {isAiSidebarOpen && (
                     <button

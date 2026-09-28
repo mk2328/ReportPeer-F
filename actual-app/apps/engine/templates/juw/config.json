@@ -14,8 +14,8 @@
       "paragraph_after": 0
     },
     "title_page": {
-      "logo_width_inches": 1.24,
-      "logo_height_inches": 1.34,
+      "logo_width_inches": 1.35,
+      "logo_height_inches": 1.35,
       "title_font_size": 26,
       "report_label": "BS (CS) Final Year Project Report",
       "department_line": "Department of Computer Science and Software Engineering",
@@ -24,7 +24,7 @@
       "student_tabs_inches": [2.0, 4.5]
     },
     "second_cover": {
-      "student_tabs_inches": [1.5, 3.5],
+      "student_tabs_inches": [2.0, 4.5],
       "top_spacer_pt": 22,
       "after_title_pt": 52,
       "after_report_label_pt": 48,
@@ -33,8 +33,8 @@
       "after_date_pt": 95
     },
     "approval_page": {
-      "logo_width_inches": 0.89,
-      "logo_height_inches": 0.96,
+      "logo_width_inches": 1.0,
+      "logo_height_inches": 1.0,
       "logo_left_inches": 0.84,
       "student_tabs_inches": [1.44, 3.5],
       "department_line": "Department of Computer Science and Software Engineering",

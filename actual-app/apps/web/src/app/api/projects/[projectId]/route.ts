@@ -3,6 +3,7 @@ import { auth } from "@clerk/nextjs/server";
 import { ObjectId } from "mongodb";
 import clientPromise from "@/lib/mongodb";
 import { normalizeAiProfile } from "@/services/ai/aiProfile";
+import { buildLiteProjectPayload } from "@/lib/projectPayload";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,7 +19,7 @@ async function findOwnedProject(projectId: string, userId: string) {
 }
 
 export async function GET(
-  _req: Request,
+  req: Request,
   { params }: { params: { projectId: string } }
 ) {
   try {
@@ -34,6 +35,17 @@ export async function GET(
     if (!project) {
       console.log("Project NOT found in DB");
       return NextResponse.json({ error: "Project not found" }, { status: 404 });
+    }
+
+    const url = new URL(req.url);
+    const lite =
+      url.searchParams.get("lite") === "1" ||
+      url.searchParams.get("lite") === "true";
+
+    if (lite) {
+      return NextResponse.json(
+        buildLiteProjectPayload(project as unknown as Record<string, unknown>)
+      );
     }
 
     return NextResponse.json(project);

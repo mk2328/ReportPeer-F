@@ -1,0 +1,12 @@
+{
+  "id": "juw",
+  "displayName": "Jinnah University for Women",
+  "aliases": [
+    "juw",
+    "Jinnah University for Women",
+    "Jinnah University for Women (JUW)"
+  ],
+  "formattingConfig": "config.json",
+  "templateDocx": "template.docx",
+  "notes": "Formatting source of truth is config.json + template.docx. Web seed/AI chapter lists live under apps/web/src/universityPacks/juw and must stay aligned with chapter_structure in config.json."
+}

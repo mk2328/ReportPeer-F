@@ -6,7 +6,7 @@ from pathlib import Path
 
 from docx import Document
 
-from core.config_loader import load_university_bundle
+from core.config_loader import resolve_university_pack
 from core.document import DocumentBuilder
 from core.file_io import remove_empty_paragraphs_before_page_break_before
 from core.formatters import reapply_generated_styles
@@ -16,7 +16,7 @@ from core.word_com import export_docx_to_pdf, update_word_fields
 
 def generate_report(payload: dict, output_path: str, university: str | None = None) -> str:
     university = university or payload.get("university")
-    config, template_path = load_university_bundle(university)
+    config, template_path = resolve_university_pack(university)
 
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)

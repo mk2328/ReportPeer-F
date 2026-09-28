@@ -592,7 +592,8 @@ class DocumentBuilder:
         logo_para.paragraph_format.space_after = Pt(0)
         if logo_path is not None:
             run = logo_para.add_run()
-            run.add_picture(str(logo_path), width=Inches(logo_w), height=Inches(logo_h))
+            # Width only — preserve native aspect ratio; column width still uses logo_w.
+            run.add_picture(str(logo_path), width=Inches(logo_w))
         else:
             logo_para.paragraph_format.space_after = Pt(logo_h * 72)
 
@@ -812,10 +813,10 @@ class DocumentBuilder:
         paragraph.paragraph_format.line_spacing = 1.0
         if logo_path is not None:
             run = paragraph.add_run()
+            # Width only — preserve the logo's native aspect ratio (no stretch).
             run.add_picture(
                 str(logo_path),
                 width=Inches(width_inches),
-                height=Inches(height_inches),
             )
         else:
             # Keep vertical space so layout does not collapse without a logo.

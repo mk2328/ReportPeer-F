@@ -1,0 +1,76 @@
+{
+  "title": "Mixed Content Order Test",
+  "university": "JUW",
+  "meta": {
+    "projectTitle": "Intelligent Campus Attendance System",
+    "projectAdvisor": "Miss Hira Tariq",
+    "supervisor": "Miss Hira Tariq",
+    "submissionMonthYear": "September 2026",
+    "internalExaminer": "Miss Hira Tariq",
+    "internalExaminerDesignation": "Lecturer",
+    "externalExaminer": "Dr. External Advisor",
+    "externalExaminerDesignation": "Professor",
+    "externalExaminerOrganization": "XYZ University",
+    "headOfDepartment": "Prof. Head Name",
+    "students": [
+      { "name": "Muskan Fatima", "enrollment": "CS2021-01", "seatNumber": "21045" },
+      { "name": "Sumayya Khan", "enrollment": "CS2021-02", "seatNumber": "21052" },
+      { "name": "Habiba Ali", "enrollment": "CS2021-03", "seatNumber": "21060" }
+    ],
+    "logoDataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAFUlEQVR42mNk+M9Qz0AEYBxVSF+FABJADveWkH6aAAAAAElFTkSuQmCC"
+  },
+  "contentMap": {
+    "abstract": "Abstract body for order test.",
+    "ack": "Acknowledgement body.",
+    "ch1": "",
+    "ch1-mixed": ""
+  },
+  "structure": [
+    { "id": "abstract", "title": "Abstract", "level": 1 },
+    { "id": "lof", "title": "List of Figures", "level": 1 },
+    { "id": "lot", "title": "List of Tables", "level": 1 },
+    { "id": "ack", "title": "Acknowledgement", "level": 1 },
+    {
+      "id": "ch1",
+      "title": "CHAPTER 1 - INTRODUCTION",
+      "level": 1,
+      "subitems": [
+        {
+          "id": "ch1-mixed",
+          "title": "1.1 Mixed Order Section",
+          "level": 2,
+          "blocks": [
+            { "id": "p1", "type": "paragraph", "text": "Paragraph one before the figure." },
+            {
+              "id": "f1",
+              "type": "figure",
+              "caption": "Sample figure in the middle",
+              "fileName": "dot.png",
+              "mimeType": "image/png",
+              "dataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAFUlEQVR42mNk+M9Qz0AEYBxVSF+FABJADveWkH6aAAAAAElFTkSuQmCC"
+            },
+            { "id": "p2", "type": "paragraph", "text": "Paragraph two after the figure." },
+            {
+              "id": "l1",
+              "type": "list",
+              "listType": "bullet",
+              "items": [
+                { "id": "li1", "text": "Bullet one", "level": 1 },
+                { "id": "li2", "text": "Bullet two", "level": 1 }
+              ]
+            },
+            { "id": "p3", "type": "paragraph", "text": "Paragraph three after bullets." },
+            {
+              "id": "t1",
+              "type": "table",
+              "caption": "Sample table after bullets",
+              "columns": ["Col A", "Col B"],
+              "data": [["a1", "b1"], ["a2", "b2"]]
+            },
+            { "id": "p4", "type": "paragraph", "text": "Paragraph four after the table." }
+          ]
+        }
+      ]
+    }
+  ]
+}

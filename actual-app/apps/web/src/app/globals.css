@@ -73,6 +73,19 @@ body {
   animation: rp-soft-glow 8s ease-in-out infinite;
 }
 
+@keyframes editor-load-sweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
+}
+
+.editor-load-sweep {
+  animation: editor-load-sweep 1.15s ease-in-out infinite;
+}
+
 /* Prevent Clerk widgets from causing horizontal overflow on mobile */
 .cl-rootBox,
 .cl-card {
