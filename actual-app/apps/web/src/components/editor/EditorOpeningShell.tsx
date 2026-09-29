@@ -15,7 +15,7 @@ export function EditorOpeningShell({
   status = "Opening your project…",
   showSidebar = true,
 }: Props) {
-  return (
+  return ( 
     <div className="h-screen flex flex-col bg-[#F4F2F5] overflow-hidden">
       <header className="h-14 border-b border-slate-200/80 bg-white px-3 sm:px-4 flex items-center justify-between gap-2 shrink-0 shadow-[0_1px_0_rgba(15,23,42,0.03)]">
         <div className="flex items-center gap-2 sm:gap-3 min-w-0">

@@ -3,6 +3,11 @@ import re
 import tempfile
 from pathlib import Path
 
+from core.image_compat import (
+    ensure_docx_compatible_image,
+    register_temp_path,
+)
+
 CHAPTER_TITLE_RE = re.compile(
     r"^CHAPTER\s+(\d+)\s*(?:[-–—:]\s*(.*))?$",
     re.IGNORECASE,
@@ -516,10 +521,26 @@ def _render_figures(builder, figures):
         )
 
 
+def _figure_display_name(figure) -> str:
+    for key in ("fileName", "filename", "name", "title", "caption"):
+        value = figure.get(key)
+        if value:
+            return str(value)
+    path = figure.get("path") or figure.get("image") or figure.get("src")
+    if path:
+        return Path(str(path)).name
+    return "figure"
+
+
 def _resolve_figure_path(figure):
+    label = _figure_display_name(figure)
+    mime = figure.get("mimeType") or figure.get("mime_type") or ""
+
     path = figure.get("path") or figure.get("image") or figure.get("src")
     if path and Path(str(path)).exists():
-        return str(path)
+        return ensure_docx_compatible_image(
+            path, figure_name=label, mime_type=str(mime) if mime else None
+        )
 
     data = figure.get("dataUrl") or figure.get("data") or ""
     if not str(data).strip():
@@ -541,8 +562,15 @@ def _resolve_figure_path(figure):
         extension = "gif"
     elif "webp" in lowered:
         extension = "webp"
+    elif "svg" in lowered:
+        extension = "svg"
 
     handle = tempfile.NamedTemporaryFile(delete=False, suffix=f".{extension}")
     handle.write(binary)
     handle.close()
-    return handle.name
+    register_temp_path(handle.name)
+    return ensure_docx_compatible_image(
+        handle.name,
+        figure_name=label,
+        mime_type=str(mime or header) if (mime or header) else None,
+    )

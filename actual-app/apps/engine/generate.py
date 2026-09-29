@@ -10,8 +10,9 @@ from core.config_loader import resolve_university_pack
 from core.document import DocumentBuilder
 from core.file_io import remove_empty_paragraphs_before_page_break_before
 from core.formatters import reapply_generated_styles
+from core.image_compat import cleanup_temp_images
 from core.mapper import render_project
-from core.word_com import export_docx_to_pdf, update_word_fields
+from core.libreoffice_pdf import finalize_docx_with_libreoffice
 
 
 def generate_report(payload: dict, output_path: str, university: str | None = None) -> str:
@@ -21,22 +22,22 @@ def generate_report(payload: dict, output_path: str, university: str | None = No
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    document = Document(str(template_path))
-    builder = DocumentBuilder(document, config)
-    builder.prepare()
-    render_project(builder, payload)
-    builder.finalize()
-    abs_output = os.path.abspath(str(output))
-    document.save(abs_output)
-    document = None
+    try:
+        document = Document(str(template_path))
+        builder = DocumentBuilder(document, config)
+        builder.prepare()
+        render_project(builder, payload)
+        builder.finalize()
+        abs_output = os.path.abspath(str(output))
+        document.save(abs_output)
+        document = None
 
-    update_word_fields(abs_output)
-    if remove_empty_paragraphs_before_page_break_before(abs_output):
-        # Refresh page numbers without rebuilding TOC entries (rebuild recreates the blank para).
-        update_word_fields(abs_output, page_numbers_only=True)
+        # python-docx only. LibreOffice updates TOC/LOF/LOT/fields after styles are reapplied.
         remove_empty_paragraphs_before_page_break_before(abs_output)
-    reapply_generated_styles(abs_output, config)
-    return str(Path(abs_output).resolve())
+        reapply_generated_styles(abs_output, config)
+        return str(Path(abs_output).resolve())
+    finally:
+        cleanup_temp_images()
 
 
 def main(argv=None):
@@ -46,7 +47,7 @@ def main(argv=None):
     parser.add_argument(
         "--pdf",
         default=None,
-        help="Optional path to also write a PDF via Word COM (DOCX is always generated first)",
+        help="Optional path to also write a PDF via LibreOffice headless (DOCX is always generated first)",
     )
     parser.add_argument("--university", default=None, help="University slug (default: from payload or juw)")
     args = parser.parse_args(argv)
@@ -55,24 +56,21 @@ def main(argv=None):
         with open(args.input, "r", encoding="utf-8-sig") as handle:
             payload = json.load(handle)
         path = generate_report(payload, args.output, args.university)
-        result = {"ok": True, "output": path}
+        # LibreOffice fills TOC/LOF/LOT, then we re-apply TOC run formatting
+        # (TNR 10 pt, single spacing) before the PDF export pass.
+        finalize_docx_with_libreoffice(path, None, update_indexes=True)
+        config, _ = resolve_university_pack(
+            args.university or payload.get("university")
+        )
+        reapply_generated_styles(path, config)
+        pdf_path = None
         if args.pdf:
-            pdf_ok = export_docx_to_pdf(path, args.pdf)
-            if not pdf_ok:
-                print(
-                    json.dumps(
-                        {
-                            "ok": False,
-                            "error": (
-                                "PDF export failed. Microsoft Word must be installed "
-                                "and available via Word COM on this machine."
-                            ),
-                        }
-                    ),
-                    file=sys.stderr,
-                )
-                return 1
-            result["pdf"] = str(Path(args.pdf).resolve())
+            pdf_path = finalize_docx_with_libreoffice(
+                path, args.pdf, update_indexes=False
+            )
+        result = {"ok": True, "output": path}
+        if pdf_path:
+            result["pdf"] = pdf_path
         print(json.dumps(result))
         return 0
     except Exception as error:

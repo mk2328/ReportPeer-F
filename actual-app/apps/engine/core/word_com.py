@@ -103,6 +103,8 @@ def update_word_fields(doc_path: str, lists_only: bool = False, page_numbers_onl
 def export_docx_to_pdf(docx_path: str, pdf_path: str) -> bool:
     """
     Convert an existing DOCX to PDF via desktop Word (ExportAsFixedFormat).
+    Kept for rollback. Production generation uses LibreOffice in core.libreoffice_pdf
+    and does not call this function.
     Returns True when the PDF exists and is non-empty.
     """
     try:
