@@ -10,9 +10,15 @@ ENV DEBIAN_FRONTEND=noninteractive \
     REPORTPEER_SOFFICE=/usr/lib/libreoffice/program/soffice
 
 # libreoffice-writer + python3-uno drive TOC/LOF/LOT updates and PDF export.
-# Liberation fonts are metric-compatible with Times New Roman, so JUW
-# typography keeps the same line and page breaks as on Windows.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# DOCX runs request "Times New Roman". Without the real family installed,
+# LibreOffice substitutes Liberation Serif and the PDF looks different from
+# Word. ttf-mscorefonts-installer downloads Microsoft's Core Fonts for the
+# Web (incl. Times New Roman) after EULA acceptance - not a substitute font.
+# fonts-liberation / DejaVu remain as fallbacks for other missing faces.
+RUN echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" \
+      | debconf-set-selections \
+ && sed -i 's/Components: main$/Components: main contrib/' /etc/apt/sources.list.d/debian.sources \
+ && apt-get update && apt-get install -y --no-install-recommends \
         python3 \
         python3-pip \
         python3-venv \
@@ -24,8 +30,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         fontconfig \
         curl \
         ca-certificates \
+        cabextract \
+        xfonts-utils \
+        ttf-mscorefonts-installer \
     && rm -rf /var/lib/apt/lists/* \
-    && fc-cache -f
+    && fc-cache -f \
+    && fc-list : family | grep -F "Times New Roman"
 
 # --system-site-packages keeps `uno` (python3-uno, dist-packages) importable
 # while pip dependencies stay in the venv.
