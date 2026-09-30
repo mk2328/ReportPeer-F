@@ -361,7 +361,40 @@ def configure_front_matter_heading_style(document, config):
     return style
 
 
+def ensure_heading_styles(document, levels=range(1, 6)):
+    """
+    Make document.styles["Heading N"] resolvable for every level.
+
+    python-docx only matches Word's built-in name "heading N". LibreOffice saves
+    the same style as "Heading N" (styleId HeadingN is unchanged), so repair the
+    name by styleId and only create the style when the document has none.
+    """
+    from docx.enum.style import WD_STYLE_TYPE
+
+    styles = document.styles
+    for level in levels:
+        try:
+            styles[f"Heading {level}"]
+            continue
+        except KeyError:
+            pass
+
+        element = styles.element.get_by_id(f"Heading{level}")
+        if element is not None and element.type == WD_STYLE_TYPE.PARAGRAPH:
+            element.name_val = f"heading {level}"
+            continue
+
+        style = styles.add_style(f"Heading {level}", WD_STYLE_TYPE.PARAGRAPH, builtin=True)
+        style.base_style = styles["Normal"]
+        style.next_paragraph_style = styles["Normal"]
+        # TOC \o "1-5" collects paragraphs by outline level, not by style name.
+        outline = OxmlElement("w:outlineLvl")
+        outline.set(qn("w:val"), str(level - 1))
+        style.element.get_or_add_pPr().append(outline)
+
+
 def configure_heading_styles(document, config):
+    ensure_heading_styles(document)
     headings = config.get("styles", {}).get("headings", {})
     for level in range(1, 6):
         cfg = headings.get(f"JUW_H{level}", {})
