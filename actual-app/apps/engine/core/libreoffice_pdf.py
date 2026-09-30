@@ -6,9 +6,11 @@ Word COM remains in word_com.py for rollback. This module does not import it.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -30,12 +32,83 @@ UPDATE_INDEXES = True
 if len(sys.argv) > 4:
     UPDATE_INDEXES = sys.argv[4] not in ("0", "false", "False", "no")
 
+# FontSlant.NONE — avoid importing com.sun.star.awt (missing in some LO builds).
+_FONT_SLANT_NONE = 0
+
 
 def prop(name, value):
     item = PropertyValue()
     item.Name = name
     item.Value = value
     return item
+
+
+def is_index_entry_style(style):
+    s = (style or "").upper().strip()
+    return (
+        s.startswith("TOC")
+        or s.startswith("CONTENTS")
+        or s.startswith("FIGURE INDEX")
+        or s == "TABLE OF FIGURES"
+        or s.startswith("TABLE OF FIGURES")
+    )
+
+
+def normalize_toc_entries(document):
+    """Force TOC/LOF/LOT entry runs upright TNR 10pt (LOT inherits italic from captions)."""
+    formatted = 0
+    enum = document.getText().createEnumeration()
+    while enum.hasMoreElements():
+        para = enum.nextElement()
+        try:
+            if not para.supportsService("com.sun.star.text.Paragraph"):
+                continue
+            style = str(para.ParaStyleName or "")
+        except Exception:
+            continue
+        if not is_index_entry_style(style):
+            continue
+        try:
+            para.ParaTopMargin = 0
+            para.ParaBottomMargin = 0
+        except Exception:
+            pass
+        try:
+            penum = para.createEnumeration()
+            while penum.hasMoreElements():
+                portion = penum.nextElement()
+                try:
+                    portion.CharPosture = _FONT_SLANT_NONE
+                    portion.CharFontName = "Times New Roman"
+                    portion.CharFontNameAsian = "Times New Roman"
+                    portion.CharFontNameComplex = "Times New Roman"
+                    portion.CharHeight = 10
+                    portion.CharHeightAsian = 10
+                    portion.CharHeightComplex = 10
+                    style_key = style.upper().strip()
+                    # FontWeight.BOLD = 150, NORMAL = 100. Level-1 TOC lines only.
+                    if style_key.startswith("TOC") or style_key.startswith("CONTENTS"):
+                        try:
+                            portion.CharWeight = (
+                                150.0
+                                if style_key in ("CONTENTS 1", "TOC 1")
+                                else 100.0
+                            )
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            if style.upper().strip().startswith("TOC") or style.upper().strip().startswith("CONTENTS"):
+                try:
+                    cursor = document.getText().createTextCursorByRange(para)
+                    # CaseMap.SMALLCAPS = 4. Portions expose CharCaseMap, not CharCase.
+                    cursor.CharCaseMap = 4
+                except Exception:
+                    pass
+            formatted += 1
+        except Exception:
+            pass
+    print("TOC_FORMATTED", formatted)
 
 
 local = uno.getComponentContext()
@@ -90,10 +163,30 @@ else:
     print("INDEX_COUNT SKIP")
     print("FIELDS_REFRESHED SKIP")
 
+# Always normalize TOC/LOF/LOT visuals after indexes exist in this session.
+normalize_toc_entries(doc)
+
 doc.storeToURL(docx_url, (prop("FilterName", "MS Word 2007 XML"), prop("Overwrite", True)))
 if PDF:
+    # Export PDF in the SAME session as index update. Reloading the DOCX later
+    # drops Writer-native TOC hyperlinks (Word hyperlinks are not re-imported),
+    # which produces PDFs with no clickable TOC/LOF/LOT entries.
     pdf_url = Path(PDF).resolve().as_uri()
-    doc.storeToURL(pdf_url, (prop("FilterName", "writer_pdf_Export"), prop("Overwrite", True)))
+    pdf_filter_data = (
+        prop("ExportBookmarks", True),
+        prop("ExportBookmarksNamedDestinations", True),
+        prop("ExportBmkToDest", True),
+        prop("ConvertOOoTargetToPDFTarget", True),
+        prop("ExportLinksRelativeFsys", False),
+    )
+    doc.storeToURL(
+        pdf_url,
+        (
+            prop("FilterName", "writer_pdf_Export"),
+            prop("Overwrite", True),
+            prop("FilterData", pdf_filter_data),
+        ),
+    )
 doc.close(True)
 desktop.terminate()
 print("UNO_OK")
@@ -102,6 +195,120 @@ print("UNO_OK")
 
 class LibreOfficePdfError(RuntimeError):
     """PDF conversion failed or LibreOffice is unavailable."""
+
+
+_CAPTION_KEY_RE = re.compile(r"^(Figure|Table)\s+(\d+\.\d+)\b", re.IGNORECASE)
+_LIST_HEADING_RE = re.compile(
+    r"LIST OF (FIGURES|TABLES)\b", re.IGNORECASE
+)
+
+
+def _caption_key(text: str) -> str | None:
+    match = _CAPTION_KEY_RE.match((text or "").strip())
+    if not match:
+        return None
+    return f"{match.group(1).lower()} {match.group(2)}"
+
+
+def add_lof_lot_links_to_pdf(pdf_path: str | Path) -> int:
+    """
+    LibreOffice exports clickable TOC links from ContentIndex, but Illustration /
+    Table indexes keep TokenHyperlinkStart without emitting PDF link annotations
+    (LevelFormat is not writable for those indexes in current LO builds).
+
+    Add GOTO links on LOF/LOT entry lines to the matching body captions.
+    Returns the number of links added.
+    """
+    try:
+        import pymupdf
+    except ImportError as error:
+        raise LibreOfficePdfError(
+            "pymupdf is required to add LOF/LOT PDF links after LibreOffice export."
+        ) from error
+
+    path = Path(pdf_path).resolve()
+    doc = pymupdf.open(str(path))
+    try:
+        list_pages: set[int] = set()
+        destinations: dict[str, tuple[int, float]] = {}
+
+        for page_index, page in enumerate(doc):
+            plain = page.get_text("text") or ""
+            if _LIST_HEADING_RE.search(plain):
+                list_pages.add(page_index)
+
+        for page_index, page in enumerate(doc):
+            if page_index in list_pages:
+                continue
+            for block in page.get_text("dict").get("blocks", []):
+                for line in block.get("lines", []):
+                    line_text = "".join(
+                        span.get("text", "") for span in line.get("spans", [])
+                    ).strip()
+                    key = _caption_key(line_text)
+                    if not key:
+                        continue
+                    # Prefer the first body caption occurrence for each key.
+                    if key in destinations:
+                        continue
+                    y = line["bbox"][1]
+                    destinations[key] = (page_index, y)
+
+        added = 0
+        for page_index in sorted(list_pages):
+            page = doc[page_index]
+            existing = {
+                (
+                    round(link.get("from").x0, 1),
+                    round(link.get("from").y0, 1),
+                    round(link.get("from").x1, 1),
+                    round(link.get("from").y1, 1),
+                )
+                for link in page.get_links()
+                if link.get("from") is not None
+            }
+            for block in page.get_text("dict").get("blocks", []):
+                for line in block.get("lines", []):
+                    spans = line.get("spans", [])
+                    if not spans:
+                        continue
+                    line_text = "".join(span.get("text", "") for span in spans).strip()
+                    if _LIST_HEADING_RE.match(line_text):
+                        continue
+                    key = _caption_key(line_text)
+                    if not key or key not in destinations:
+                        continue
+                    bbox = line["bbox"]
+                    rect_key = (
+                        round(bbox[0], 1),
+                        round(bbox[1], 1),
+                        round(bbox[2], 1),
+                        round(bbox[3], 1),
+                    )
+                    if rect_key in existing:
+                        continue
+                    dest_page, dest_y = destinations[key]
+                    link = {
+                        "kind": pymupdf.LINK_GOTO,
+                        "from": pymupdf.Rect(bbox),
+                        "page": dest_page,
+                        "to": pymupdf.Point(72, dest_y),
+                    }
+                    page.insert_link(link)
+                    existing.add(rect_key)
+                    added += 1
+
+        if added:
+            # Rewrite atomically so a failed save cannot truncate the LO PDF.
+            tmp = path.with_suffix(path.suffix + ".linktmp")
+            doc.save(str(tmp), incremental=False, deflate=True)
+            doc.close()
+            tmp.replace(path)
+            return added
+        return added
+    finally:
+        if not doc.is_closed:
+            doc.close()
 
 
 def find_soffice() -> str:
@@ -154,16 +361,47 @@ def find_soffice() -> str:
     )
 
 
+def _python_can_import_uno(python_path: str) -> bool:
+    try:
+        probe = subprocess.run(
+            [python_path, "-c", "import uno"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return probe.returncode == 0
+
+
 def find_libreoffice_python(soffice: str) -> str:
-    """Python bundled with LibreOffice, required for index/field updates."""
+    """Interpreter that can drive UNO. Required for index/field updates."""
+    configured = os.environ.get("REPORTPEER_UNO_PYTHON", "").strip().strip('"')
+    if configured and os.path.isfile(configured):
+        return configured
+
     program = Path(soffice).resolve().parent
     for name in ("python.exe", "python.bin", "python"):
         candidate = program / name
         if candidate.is_file():
             return str(candidate)
+
+    # Debian/Ubuntu ship UNO for the system interpreter (python3-uno) rather than
+    # bundling a python next to soffice.
+    if os.name != "nt":
+        seen: set[str] = set()
+        for candidate in (sys.executable, shutil.which("python3"), "/usr/bin/python3"):
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
+            if os.path.isfile(candidate) and _python_can_import_uno(candidate):
+                return candidate
+
     raise LibreOfficePdfError(
-        "LibreOffice was found, but its Python runtime is missing next to soffice "
-        f"({program}). Reinstall LibreOffice so TOC/LOF/LOT can be updated."
+        "LibreOffice was found, but no Python runtime can import uno "
+        f"(looked next to {program}). Install python3-uno, or set "
+        "REPORTPEER_UNO_PYTHON to an interpreter that can import uno."
     )
 
 
@@ -291,6 +529,9 @@ def finalize_docx_with_libreoffice(
     if target is not None:
         if not target.is_file() or target.stat().st_size <= 0:
             raise LibreOfficePdfError("LibreOffice produced an empty PDF.")
+        # TOC links come from same-session LO export; LOF/LOT need a small
+        # post-pass because Writer does not emit PDF annotations for those indexes.
+        add_lof_lot_links_to_pdf(target)
         return str(target)
     return None
 

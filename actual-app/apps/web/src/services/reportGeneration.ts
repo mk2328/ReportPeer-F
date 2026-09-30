@@ -160,6 +160,11 @@ const ENGINE_ROOT = path.resolve(
 
 const GENERATE_TIMEOUT_MS = 120_000;
 
+/** Set in production to the deployed engine (Railway). Empty locally. */
+function resolveEngineUrl() {
+  return (process.env.REPORTPEER_ENGINE_URL || "").trim().replace(/\/+$/, "");
+}
+
 export async function generateProjectDocx(
   project: ReportProjectInput,
   options?: { format?: ReportExportFormat }
@@ -169,17 +174,27 @@ export async function generateProjectDocx(
   }
 
   const format: ReportExportFormat = options?.format === "pdf" ? "pdf" : "docx";
+  const engineUrl = resolveEngineUrl();
+  return engineUrl
+    ? generateViaRemoteEngine(project, format, engineUrl)
+    : generateViaLocalEngine(project, format);
+}
+
+/**
+ * Local development: spawn the engine CLI directly. Unchanged behaviour.
+ */
+async function generateViaLocalEngine(
+  project: ReportProjectInput,
+  format: ReportExportFormat
+): Promise<GeneratedReport> {
   const pythonPath = await resolvePythonPath();
   const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "reportpeer-"));
   const inputPath = path.join(workDir, "payload.json");
   const outputPath = path.join(workDir, "report.docx");
   const pdfPath = path.join(workDir, "report.pdf");
 
+  const logoDataUrl = resolveLogoDataUrl(project);
   let logoPath: string | undefined;
-  const logoDataUrl =
-    project.meta?.logoDataUrl ||
-    project.meta?.universityLogo?.dataUrl ||
-    project.universityLogo?.dataUrl;
   if (logoDataUrl && logoDataUrl.startsWith("data:")) {
     const match = /^data:([^;,]+)?(;charset=[^;]+)?;base64,(.+)$/i.exec(logoDataUrl);
     if (match) {
@@ -206,7 +221,155 @@ export async function generateProjectDocx(
     }
   }
 
-  const payload = {
+  const payload = buildEnginePayload(project, logoPath, logoDataUrl);
+
+  try {
+    await fs.writeFile(inputPath, JSON.stringify(payload), "utf8");
+
+    const args = ["generate.py", "--input", inputPath, "--output", outputPath];
+    if (format === "pdf") {
+      args.push("--pdf", pdfPath);
+    }
+
+    const result = await runProcess(pythonPath, args, ENGINE_ROOT, GENERATE_TIMEOUT_MS);
+
+    if (result.code !== 0) {
+      const details = extractEngineError(result.stderr, result.stdout);
+      throw new ReportGenerationError(details || "Report generation failed.", 500);
+    }
+
+    const artifactPath = format === "pdf" ? pdfPath : outputPath;
+    const buffer = await readFileWhenReady(artifactPath);
+    assertNonEmptyArtifact(buffer.length, format);
+
+    return {
+      buffer,
+      filename: buildDownloadFilename(project.title, format),
+      contentType: format === "pdf" ? PDF_CONTENT_TYPE : DOCX_CONTENT_TYPE,
+    };
+  } finally {
+    await fs.rm(workDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+/**
+ * Production: POST the same payload to the deployed engine and stream back the
+ * artifact. No temp logo file — the engine decodes `logoDataUrl` itself, since
+ * a path written here would not exist on the engine container.
+ */
+async function generateViaRemoteEngine(
+  project: ReportProjectInput,
+  format: ReportExportFormat,
+  engineUrl: string
+): Promise<GeneratedReport> {
+  const secret = (process.env.REPORTPEER_ENGINE_SECRET || "").trim();
+  if (!secret) {
+    throw new ReportGenerationError(
+      "REPORTPEER_ENGINE_SECRET is not configured for the report engine.",
+      500
+    );
+  }
+
+  const endpoint = engineUrl.endsWith("/generate-report")
+    ? engineUrl
+    : `${engineUrl}/generate-report`;
+  const payload = buildEnginePayload(project, undefined, resolveLogoDataUrl(project));
+
+  let response: Response;
+  try {
+    response = await fetch(`${endpoint}?format=${format}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${secret}`,
+      },
+      body: JSON.stringify(payload),
+      cache: "no-store",
+      signal: AbortSignal.timeout(GENERATE_TIMEOUT_MS),
+    });
+  } catch (error) {
+    const name = (error as Error)?.name;
+    if (name === "TimeoutError" || name === "AbortError") {
+      throw new ReportGenerationError("Report generation timed out.", 504);
+    }
+    throw new ReportGenerationError(
+      `Could not reach the report engine: ${(error as Error)?.message || "unknown error"}`,
+      502
+    );
+  }
+
+  if (!response.ok) {
+    throw new ReportGenerationError(
+      await readRemoteEngineError(response),
+      mapRemoteEngineStatus(response.status)
+    );
+  }
+
+  const buffer = Buffer.from(await response.arrayBuffer());
+  assertNonEmptyArtifact(buffer.length, format);
+
+  return {
+    buffer,
+    filename: buildDownloadFilename(project.title, format),
+    contentType: format === "pdf" ? PDF_CONTENT_TYPE : DOCX_CONTENT_TYPE,
+  };
+}
+
+function resolveLogoDataUrl(project: ReportProjectInput) {
+  return (
+    project.meta?.logoDataUrl ||
+    project.meta?.universityLogo?.dataUrl ||
+    project.universityLogo?.dataUrl
+  );
+}
+
+function assertNonEmptyArtifact(size: number, format: ReportExportFormat) {
+  if (size > 0) return;
+  throw new ReportGenerationError(
+    format === "pdf"
+      ? "The engine produced an empty PDF."
+      : "The engine produced an empty document.",
+    500
+  );
+}
+
+async function readRemoteEngineError(response: Response) {
+  let body = "";
+  try {
+    body = (await response.text()).trim();
+  } catch {
+    body = "";
+  }
+  if (body) {
+    try {
+      const parsed = JSON.parse(body);
+      const detail = parsed?.detail ?? parsed?.error;
+      if (typeof detail === "string" && detail) return detail;
+      if (Array.isArray(detail) && detail.length) {
+        return detail.map((entry) => entry?.msg || JSON.stringify(entry)).join("; ");
+      }
+    } catch {
+      return body.slice(0, 500);
+    }
+  }
+  return `Report engine returned ${response.status}.`;
+}
+
+/** Engine auth/config failures are our problem, not a bad client request. */
+function mapRemoteEngineStatus(status: number) {
+  if (status === 400 || status === 422) return 400;
+  if (status === 401 || status === 403) return 500;
+  if (status === 503) return 503;
+  if (status === 504) return 504;
+  return 502;
+}
+
+function buildEnginePayload(
+  project: ReportProjectInput,
+  logoPath: string | undefined,
+  logoDataUrl: string | undefined
+) {
+  return {
     title: project.title || project.projectTitle || project.meta?.projectTitle || "FYP Report",
     university: project.university || "JUW",
     structure: project.structure,
@@ -262,41 +425,6 @@ export async function generateProjectDocx(
         : project.meta?.universityLogo || project.universityLogo || undefined,
     },
   };
-
-  try {
-    await fs.writeFile(inputPath, JSON.stringify(payload), "utf8");
-
-    const args = ["generate.py", "--input", inputPath, "--output", outputPath];
-    if (format === "pdf") {
-      args.push("--pdf", pdfPath);
-    }
-
-    const result = await runProcess(pythonPath, args, ENGINE_ROOT, GENERATE_TIMEOUT_MS);
-
-    if (result.code !== 0) {
-      const details = extractEngineError(result.stderr, result.stdout);
-      throw new ReportGenerationError(details || "Report generation failed.", 500);
-    }
-
-    const artifactPath = format === "pdf" ? pdfPath : outputPath;
-    const buffer = await readFileWhenReady(artifactPath);
-    if (!buffer.length) {
-      throw new ReportGenerationError(
-        format === "pdf"
-          ? "The engine produced an empty PDF."
-          : "The engine produced an empty document.",
-        500
-      );
-    }
-
-    return {
-      buffer,
-      filename: buildDownloadFilename(project.title, format),
-      contentType: format === "pdf" ? PDF_CONTENT_TYPE : DOCX_CONTENT_TYPE,
-    };
-  } finally {
-    await fs.rm(workDir, { recursive: true, force: true }).catch(() => undefined);
-  }
 }
 
 export class ReportGenerationError extends Error {

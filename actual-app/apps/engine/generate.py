@@ -40,6 +40,27 @@ def generate_report(payload: dict, output_path: str, university: str | None = No
         cleanup_temp_images()
 
 
+def generate_report_files(
+    payload: dict,
+    output_path: str,
+    pdf_path: str | None = None,
+    university: str | None = None,
+) -> tuple[str, str | None]:
+    """
+    Build the DOCX and, when pdf_path is given, the PDF. Returns (docx, pdf).
+
+    One LibreOffice session must both update TOC/LOF/LOT and export the PDF.
+    Reloading the saved DOCX later drops Writer-native hyperlinks, so a second
+    "PDF-only" pass produced non-clickable TOC/LOF/LOT entries.
+    """
+    path = generate_report(payload, output_path, university)
+    written_pdf = finalize_docx_with_libreoffice(path, pdf_path, update_indexes=True)
+    # Re-apply DOCX styles after LO (keeps LOT upright / TOC 10pt in the DOCX).
+    config, _ = resolve_university_pack(university or payload.get("university"))
+    reapply_generated_styles(path, config)
+    return path, written_pdf
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Generate a formatted FYP DOCX.")
     parser.add_argument("--input", required=True, help="Path to project JSON payload")
@@ -55,19 +76,9 @@ def main(argv=None):
     try:
         with open(args.input, "r", encoding="utf-8-sig") as handle:
             payload = json.load(handle)
-        path = generate_report(payload, args.output, args.university)
-        # LibreOffice fills TOC/LOF/LOT, then we re-apply TOC run formatting
-        # (TNR 10 pt, single spacing) before the PDF export pass.
-        finalize_docx_with_libreoffice(path, None, update_indexes=True)
-        config, _ = resolve_university_pack(
-            args.university or payload.get("university")
+        path, pdf_path = generate_report_files(
+            payload, args.output, args.pdf, args.university
         )
-        reapply_generated_styles(path, config)
-        pdf_path = None
-        if args.pdf:
-            pdf_path = finalize_docx_with_libreoffice(
-                path, args.pdf, update_indexes=False
-            )
         result = {"ok": True, "output": path}
         if pdf_path:
             result["pdf"] = pdf_path

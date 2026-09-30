@@ -178,15 +178,24 @@ FRONT_MATTER_H1_TITLES = {
 }
 
 
+def set_run_toggle(r_pr, tag, enabled):
+    """Set a run toggle explicitly so it overrides a style that turns the same toggle on."""
+    element = r_pr.find(qn(f"w:{tag}"))
+    if element is None:
+        element = OxmlElement(f"w:{tag}")
+        r_pr.append(element)
+    element.set(qn("w:val"), "true" if enabled else "0")
+
+
 def apply_heading_run(run, size_pt, bold=True, all_caps=False, small_caps=False):
     run.font.bold = bold
     run.font.all_caps = all_caps
     run.font.small_caps = small_caps
     apply_body_run(run, size_pt)
     r_pr = run._element.get_or_add_rPr()
-    set_style_toggle(r_pr, "b", bold)
-    set_style_toggle(r_pr, "caps", all_caps)
-    set_style_toggle(r_pr, "smallCaps", small_caps)
+    set_run_toggle(r_pr, "b", bold)
+    set_run_toggle(r_pr, "caps", all_caps)
+    set_run_toggle(r_pr, "smallCaps", small_caps)
 
 
 def juw_heading_appearance(text, level):
@@ -198,6 +207,11 @@ def juw_heading_appearance(text, level):
     if int(level or 1) == 1:
         if title.startswith("CHAPTER"):
             return 20, True, False
+        # "Appendix A" must stay title case. all_caps would print APPENDIX A.
+        if re.fullmatch(r"APPENDIX\s+[A-Z0-9]+", title):
+            return 20, False, False
+        if title in {"REFERENCES", "REFERENCE", "BIBLIOGRAPHY"}:
+            return 20, True, False
         if title in FRONT_MATTER_H1_TITLES:
             return 20, True, False
         return 18, True, False
@@ -206,6 +220,27 @@ def juw_heading_appearance(text, level):
     if int(level) == 3:
         return 14, False, True
     return 12, False, True
+
+
+def enforce_ruled_heading_spacing(document):
+    """Keep 12pt above and below the heading rule, including when a section break sits on that paragraph."""
+    for paragraph in document.paragraphs:
+        p_pr = paragraph._p.find(qn("w:pPr"))
+        if p_pr is None:
+            continue
+        borders = p_pr.find(qn("w:pBdr"))
+        if borders is None or borders.find(qn("w:bottom")) is None:
+            continue
+        bottom = borders.find(qn("w:bottom"))
+        bottom.set(qn("w:space"), "12")
+        spacing = p_pr.find(qn("w:spacing"))
+        if spacing is None:
+            spacing = OxmlElement("w:spacing")
+            p_pr.append(spacing)
+        spacing.set(qn("w:before"), "0")
+        spacing.set(qn("w:after"), "240")
+        spacing.set(qn("w:line"), "240")
+        spacing.set(qn("w:lineRule"), "auto")
 
 
 def enforce_juw_heading_runs(document):
@@ -360,22 +395,30 @@ def configure_heading_styles(document, config):
 
 
 def configure_toc_styles(document):
-    """TOC entries: Times New Roman 10 pt, single line spacing."""
+    """TOC/LOF/LOT entries: Times New Roman 10 pt, single line spacing, upright."""
     from docx.enum.text import WD_LINE_SPACING
 
-    for index in range(1, 6):
-        style = None
-        for candidate in (f"TOC {index}", f"toc {index}"):
-            try:
-                style = document.styles[candidate]
-                break
-            except KeyError:
-                continue
-        if style is None:
+    style_names = [f"TOC {index}" for index in range(1, 6)]
+    style_names += [f"toc {index}" for index in range(1, 6)]
+    style_names += [f"Contents {index}" for index in range(1, 6)]
+    # LibreOffice maps LOF/LOT entries to this style when saving DOCX.
+    style_names += ["table of figures", "Table of Figures", "Figure Index 1"]
+
+    for candidate in style_names:
+        try:
+            style = document.styles[candidate]
+        except KeyError:
             continue
 
         style.font.name = "Times New Roman"
         style.font.size = Pt(10)
+        style.font.italic = False
+        # TOC level 1 (chapters, abstract, references, appendices) is bold.
+        # LOF/LOT use "table of figures" and stay regular, matching each other.
+        level_one = candidate.lower() in {"toc 1", "contents 1"}
+        toc_entry = candidate.lower().startswith("toc") or candidate.lower().startswith("contents")
+        style.font.bold = level_one
+        style.font.small_caps = toc_entry
         set_style_font_size(style, 10)
 
         r_pr = style.element.get_or_add_rPr()
@@ -384,6 +427,19 @@ def configure_toc_styles(document):
         r_fonts.set(qn("w:hAnsi"), "Times New Roman")
         r_fonts.set(qn("w:cs"), "Times New Roman")
         r_fonts.set(qn("w:eastAsia"), "Times New Roman")
+        set_style_toggle(r_pr, "b", level_one)
+        set_style_toggle(r_pr, "smallCaps", toc_entry)
+        # LOT inherits italic from Caption/table caption runs; force upright like LOF.
+        for tag in ("i", "iCs"):
+            node = r_pr.find(qn(f"w:{tag}"))
+            if node is not None:
+                r_pr.remove(node)
+        i_off = OxmlElement("w:i")
+        i_off.set(qn("w:val"), "0")
+        r_pr.append(i_off)
+        i_cs_off = OxmlElement("w:iCs")
+        i_cs_off.set(qn("w:val"), "0")
+        r_pr.append(i_cs_off)
 
         paragraph_format = style.paragraph_format
         paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
@@ -392,13 +448,23 @@ def configure_toc_styles(document):
         paragraph_format.space_after = Pt(0)
 
 
+def _is_index_entry_paragraph(paragraph) -> bool:
+    name = ((paragraph.style.name or "") if paragraph.style else "").lower()
+    return (
+        name.startswith("toc")
+        or name.startswith("contents")
+        or name.startswith("figure index")
+        or name == "table of figures"
+        or name.startswith("table of figures")
+    )
+
+
 def enforce_toc_entry_formatting(document):
-    """Force generated TOC paragraphs to 10 pt TNR single spacing after Word updates."""
+    """Force generated TOC/LOF/LOT paragraphs to 10 pt TNR upright single spacing."""
     from docx.enum.text import WD_LINE_SPACING
 
     for paragraph in document.paragraphs:
-        name = (paragraph.style.name or "") if paragraph.style else ""
-        if not name.lower().startswith("toc"):
+        if not _is_index_entry_paragraph(paragraph):
             continue
         if not paragraph.text.strip():
             continue
@@ -426,6 +492,22 @@ def enforce_toc_entry_formatting(document):
                     element = OxmlElement(f"w:{tag}")
                     r_pr.append(element)
                 element.set(qn("w:val"), "20")  # 10 pt in half-points
+            # Clear inherited italic from table captions so LOT matches LOF (upright).
+            for tag in ("i", "iCs"):
+                node = r_pr.find(qn(f"w:{tag}"))
+                if node is not None:
+                    r_pr.remove(node)
+            i_off = OxmlElement("w:i")
+            i_off.set(qn("w:val"), "0")
+            r_pr.append(i_off)
+            i_cs_off = OxmlElement("w:iCs")
+            i_cs_off.set(qn("w:val"), "0")
+            r_pr.append(i_cs_off)
+            style_name = ((paragraph.style.name or "") if paragraph.style else "").lower()
+            toc_level_one = style_name in {"toc 1", "contents 1"}
+            toc_entry = style_name.startswith("toc") or style_name.startswith("contents")
+            set_style_toggle(r_pr, "b", toc_level_one)
+            set_style_toggle(r_pr, "smallCaps", toc_entry)
 
 
 
@@ -625,6 +707,7 @@ def reapply_generated_styles(doc_path, config):
         apply_page_setup(section, config)
     restore_approval_page_without_number(document)
     enforce_juw_heading_runs(document)
+    enforce_ruled_heading_spacing(document)
     enforce_body_paragraphs(document, config)
     enforce_toc_entry_formatting(document)
     for table in document.tables:

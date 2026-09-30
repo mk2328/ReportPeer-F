@@ -9,6 +9,7 @@ from docx.shared import Inches, Pt, RGBColor
 
 from . import formatters
 from .fields import insert_field, insert_page, insert_seq
+from .image_compat import ensure_docx_compatible_image
 
 
 class DocumentBuilder:
@@ -34,6 +35,7 @@ class DocumentBuilder:
         formatters.configure_front_matter_heading_style(self.doc, self.config)
         formatters.configure_toc_styles(self.doc)
         formatters.enforce_body_paragraphs(self.doc, self.config)
+        formatters.enforce_ruled_heading_spacing(self.doc)
 
     def _heading_size(self, level):
         headings = self.config.get("styles", {}).get("headings", {})
@@ -49,14 +51,18 @@ class DocumentBuilder:
         r_fonts.set(qn("w:eastAsia"), "Times New Roman")
         r_fonts.set(qn("w:cs"), "Times New Roman")
 
-    def add_bottom_border(self, paragraph):
-        paragraph.paragraph_format.space_after = Pt(12)
+    def add_bottom_border(self, paragraph, border_space_pt=12, space_after_pt=12):
+        """Underline a heading. border_space is the gap above the line; space_after is the gap below it."""
+        paragraph.paragraph_format.space_after = Pt(space_after_pt)
         p_pr = paragraph._element.get_or_add_pPr()
+        existing = p_pr.find(qn("w:pBdr"))
+        if existing is not None:
+            p_pr.remove(existing)
         p_bdr = OxmlElement("w:pBdr")
         bottom = OxmlElement("w:bottom")
         bottom.set(qn("w:val"), "single")
         bottom.set(qn("w:sz"), "24")
-        bottom.set(qn("w:space"), "4")
+        bottom.set(qn("w:space"), str(int(border_space_pt)))
         bottom.set(qn("w:color"), "000000")
         p_bdr.append(bottom)
         p_pr.append(p_bdr)
@@ -75,7 +81,7 @@ class DocumentBuilder:
         paragraph.style = self.doc.styles["JUW Front Matter"]
         self._exclude_from_toc(paragraph)
 
-    def add_heading(self, text, level):
+    def add_heading(self, text, level, ruled=False, all_caps=None, small_caps=None):
         paragraph = self.doc.add_paragraph()
         paragraph.style = self.doc.styles[f"Heading {level}"]
         paragraph_format = paragraph.paragraph_format
@@ -83,6 +89,7 @@ class DocumentBuilder:
         if level == 1:
             paragraph_format.space_before = Pt(0)
             paragraph_format.space_after = Pt(0)
+            paragraph_format.line_spacing = 1.0
         elif level == 2:
             paragraph_format.space_before = Pt(18)
             paragraph_format.space_after = Pt(6)
@@ -100,11 +107,16 @@ class DocumentBuilder:
 
         run = paragraph.add_run(text)
         self.force_times_new_roman(run)
-        size_pt, all_caps, small_caps = formatters.juw_heading_appearance(text, level)
-        formatters.apply_heading_run(run, size_pt, bold=True, all_caps=all_caps, small_caps=small_caps)
+        size_pt, caps, scaps = formatters.juw_heading_appearance(text, level)
+        if all_caps is not None:
+            caps = all_caps
+        if small_caps is not None:
+            scaps = small_caps
+        formatters.apply_heading_run(run, size_pt, bold=True, all_caps=caps, small_caps=scaps)
 
-        if level == 1 and text.upper().startswith("CHAPTER"):
-            self.add_bottom_border(paragraph)
+        if ruled:
+            # 12pt above the rule and 12pt below it, for chapters, references, and appendices.
+            self.add_bottom_border(paragraph, border_space_pt=12, space_after_pt=12)
         return paragraph
 
     def add_body_text(self, text, level=2):
@@ -307,10 +319,14 @@ class DocumentBuilder:
         self.current_chapter = 0
 
         paragraph = self.doc.add_paragraph()
-        self._apply_front_matter_heading(paragraph)
+        # Heading 1 so Abstract and Acknowledgement appear in the TOC.
+        # Table of Contents itself stays on the JUW Front Matter style (outline 9).
+        paragraph.style = self.doc.styles["Heading 1"]
+        paragraph.paragraph_format.space_before = Pt(0)
+        paragraph.paragraph_format.line_spacing = 1.0
         if page_break_before:
             paragraph.paragraph_format.page_break_before = True
-        self.add_bottom_border(paragraph)
+        self.add_bottom_border(paragraph, border_space_pt=12, space_after_pt=12)
         run = paragraph.add_run(title.upper())
         self.force_times_new_roman(run)
         run.font.size = Pt(self._heading_size(1))
@@ -812,6 +828,9 @@ class DocumentBuilder:
         paragraph.paragraph_format.space_after = Pt(space_after_pt)
         paragraph.paragraph_format.line_spacing = 1.0
         if logo_path is not None:
+            logo_path = ensure_docx_compatible_image(
+                logo_path, figure_name="university logo"
+            )
             run = paragraph.add_run()
             # Width only — preserve the logo's native aspect ratio (no stretch).
             run.add_picture(
@@ -1036,9 +1055,10 @@ class DocumentBuilder:
             "LIST OF FIGURES",
             'TOC \\h \\z \\c "Figure"',
             "List of Figures will appear here after the document is opened in Word.",
-            heading_style="JUW Front Matter",
+            heading_style="Heading 1",
             page_break_before=True,
             trailing_page_break=False,
+            include_in_toc=True,
         )
 
     def add_list_of_tables(self):
@@ -1046,9 +1066,10 @@ class DocumentBuilder:
             "LIST OF TABLES",
             'TOC \\h \\z \\c "Table"',
             "List of Tables will appear here after the document is opened in Word.",
-            heading_style="JUW Front Matter",
+            heading_style="Heading 1",
             page_break_before=True,
             trailing_page_break=False,
+            include_in_toc=True,
         )
 
     def start_chapter(self, number, title):
@@ -1059,17 +1080,34 @@ class DocumentBuilder:
         if number == 1:
             self._set_decimal_page_start(1)
 
-        self.add_header_footer(f"Chapter {number}. {title}")
+        self.add_header_footer(f"Chapter {number}. {_running_header_title(title)}")
         self._increment_native_chapter()
-        self.add_heading(f"CHAPTER {number}", 1)
-        self.add_heading(title.upper(), 1)
+        self.add_heading(f"CHAPTER {number}", 1, ruled=True)
+        self.add_heading(str(title or "").strip().upper(), 1)
+
+    def start_appendix(self, letter, subtitle=""):
+        """Appendix A / rule / SCREENSHOTS — same rule spacing as a chapter."""
+        self.current_chapter = 0
+        self._start_body_section()
+        self._clear_page_number_type()
+        letter = str(letter or "A").strip().upper()
+        subtitle = str(subtitle or "").strip()
+        header = f"Appendix {letter}"
+        if subtitle:
+            header = f"{header}. {_running_header_title(subtitle)}"
+        self.add_header_footer(header)
+        self.add_heading(f"Appendix {letter}", 1, ruled=True, all_caps=False, small_caps=False)
+        if subtitle:
+            self.add_heading(subtitle.upper(), 1)
 
     def start_unnumbered_section(self, title):
         self.current_chapter = 0
         self._start_body_section()
         self._clear_page_number_type()
-        self.add_header_footer(title)
-        self.add_heading(title.upper(), 1)
+        label = str(title or "Section").strip()
+        self.add_header_footer(label)
+        ruled = label.upper() in {"REFERENCES", "REFERENCE", "BIBLIOGRAPHY"}
+        self.add_heading(label.upper() if ruled else label, 1, ruled=ruled)
 
     def add_header_footer(self, chapter_title):
         section = self.doc.sections[-1]
@@ -1328,12 +1366,19 @@ class DocumentBuilder:
         heading_style="Heading 1",
         page_break_before=False,
         trailing_page_break=True,
+        include_in_toc=False,
     ):
         paragraph = self.doc.add_paragraph()
-        self._apply_front_matter_heading(paragraph)
+        if include_in_toc:
+            paragraph.style = self.doc.styles["Heading 1"]
+            paragraph.paragraph_format.space_before = Pt(0)
+            paragraph.paragraph_format.line_spacing = 1.0
+        else:
+            # TABLE OF CONTENTS must not be a TOC entry.
+            self._apply_front_matter_heading(paragraph)
         if page_break_before:
             paragraph.paragraph_format.page_break_before = True
-        self.add_bottom_border(paragraph)
+        self.add_bottom_border(paragraph, border_space_pt=12, space_after_pt=12)
         run = paragraph.add_run(title)
         self.force_times_new_roman(run)
         run.font.size = Pt(self._heading_size(1))
@@ -1388,6 +1433,15 @@ class DocumentBuilder:
         r_pr = OxmlElement("w:rPr")
         r_pr.append(OxmlElement("w:vanish"))
         p_pr.append(r_pr)
+
+
+def _running_header_title(text: str) -> str:
+    """Title-case a shouted chapter name. Mixed-case titles are left as written."""
+    raw = " ".join(str(text or "").split())
+    letters = [ch for ch in raw if ch.isalpha()]
+    if letters and all(ch.isupper() for ch in letters):
+        return raw.title()
+    return raw
 
 
 def split_paragraphs(text):

@@ -1,7 +1,7 @@
-"""Convert figure formats that python-docx cannot embed into PNG.
+"""Convert figure formats that python-docx or LibreOffice cannot embed cleanly.
 
-python-docx accepts PNG/JPEG/GIF/BMP/TIFF. SVG and WEBP are converted to PNG
-before add_picture. Compatible formats are returned unchanged.
+SVG and WEBP become PNG. PNG/GIF/TIFF/BMP are rewritten as opaque RGB PNG so
+LibreOffice does not paint a SoftMask black. JPEG is left unchanged.
 """
 
 from __future__ import annotations
@@ -117,12 +117,12 @@ def _save_rgb_png(image) -> str:
     return register_temp_path(out.name) or out.name
 
 
-def _convert_webp_to_png(path: Path, label: str) -> str:
+def _flatten_raster(path: Path, label: str, fmt: str) -> str:
     try:
         from PIL import Image
     except ImportError as error:
         raise FigureImageError(
-            f"Cannot convert figure '{label}' (webp): Pillow is not installed."
+            f"Cannot convert figure '{label}' ({fmt}): Pillow is not installed."
         ) from error
 
     try:
@@ -133,8 +133,12 @@ def _convert_webp_to_png(path: Path, label: str) -> str:
         raise
     except Exception as error:
         raise FigureImageError(
-            f"Cannot convert figure '{label}' (webp) to PNG: {error}"
+            f"Cannot convert figure '{label}' ({fmt}) to PNG: {error}"
         ) from error
+
+
+def _convert_webp_to_png(path: Path, label: str) -> str:
+    return _flatten_raster(path, label, "webp")
 
 
 def _convert_svg_to_png(path: Path, label: str) -> str:
@@ -202,8 +206,14 @@ def ensure_docx_compatible_image(
     elif "webp" in mime:
         fmt = "webp"
 
-    if fmt in {"png", "jpeg", "gif", "bmp", "tiff"}:
+    if fmt == "jpeg":
         return str(path.resolve())
+
+    # PNG/GIF/TIFF/BMP often carry an alpha channel or tRNS. LibreOffice then
+    # emits a SoftMask and paints the figure black. Flatten every raster the
+    # same way WEBP already is, including visually opaque RGBA screenshots.
+    if fmt in {"png", "gif", "bmp", "tiff"}:
+        return _flatten_raster(path, label, fmt)
 
     if fmt == "webp":
         return _convert_webp_to_png(path, label)

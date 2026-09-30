@@ -1,0 +1,18 @@
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Dev-only test scripts, payloads and sample artifacts (hundreds of MB,
+# including the Windows portable LibreOffice). Nothing here is imported by
+# api.py or generate.py.
+tools/
+
+*.docx.tmp
+
+.git/
+.gitignore
+Dockerfile
+.dockerignore

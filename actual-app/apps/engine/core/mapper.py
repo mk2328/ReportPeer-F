@@ -13,6 +13,11 @@ CHAPTER_TITLE_RE = re.compile(
     re.IGNORECASE,
 )
 CHAPTER_ID_RE = re.compile(r"^ch(\d+)$", re.IGNORECASE)
+APPENDIX_TITLE_RE = re.compile(
+    r"^APPENDIX\s+([A-Z0-9]+)\s*(?:[-–—:]\s*(.*))?$",
+    re.IGNORECASE,
+)
+APPENDIX_ID_RE = re.compile(r"^app([a-z0-9]+)$", re.IGNORECASE)
 # Strip legacy numbers baked into titles (Word multilevel also supplies them).
 HEADING_NUMBER_PREFIX_RE = re.compile(r"^\d+(?:\.\d+)*\.?\s+")
 
@@ -172,6 +177,21 @@ def _classify(item):
     return "section"
 
 
+def _parse_appendix(item):
+    """Return (letter, subtitle) for APPENDIX A - SCREENSHOTS, else None."""
+    title = str(item.get("title") or "").strip()
+    match = APPENDIX_TITLE_RE.match(title)
+    if match:
+        letter = match.group(1).upper()
+        subtitle = (match.group(2) or "").strip()
+        return letter, subtitle
+    item_id = str(item.get("id") or "").strip()
+    id_match = APPENDIX_ID_RE.match(item_id)
+    if id_match and title.upper().startswith("APPENDIX"):
+        return id_match.group(1).upper(), ""
+    return None
+
+
 def _parse_chapter(item):
     title = str(item.get("title") or "").strip()
     match = CHAPTER_TITLE_RE.match(title)
@@ -197,39 +217,40 @@ def _render_body_item(builder, item, content_map):
     if chapter:
         number, title = chapter
         builder.start_chapter(number, title)
-        if has_blocks:
-            _render_section_body(builder, item, content_map, heading_level=1)
-            for child in item.get("subitems") or []:
-                _render_heading_tree(builder, child, content_map, level=2)
-        else:
-            # Legacy chapter order: body paragraphs, then all subheadings,
-            # then chapter-level lists/tables/figures.
-            builder.add_paragraphs(_content_for(item, content_map), level=1)
-            for child in item.get("subitems") or []:
-                _render_heading_tree(builder, child, content_map, level=2)
-            _render_lists(builder, item.get("lists"), heading_level=1)
-            _render_tables(builder, item.get("tables"))
-            _render_figures(builder, item.get("figures"))
+        _render_item_body(builder, item, content_map, has_blocks, heading_level=1)
+        if is_references:
+            _render_reference_entries(builder)
+        return is_references
+
+    appendix = _parse_appendix(item)
+    if appendix:
+        letter, subtitle = appendix
+        builder.start_appendix(letter, subtitle)
+        _render_item_body(builder, item, content_map, has_blocks, heading_level=1)
         if is_references:
             _render_reference_entries(builder)
         return is_references
 
     builder.start_unnumbered_section(str(item.get("title") or "Section"))
-    if has_blocks:
-        _render_section_body(builder, item, content_map, heading_level=1)
-        for child in item.get("subitems") or []:
-            _render_heading_tree(builder, child, content_map, level=2)
-    else:
-        builder.add_paragraphs(_content_for(item, content_map), level=1)
-        for child in item.get("subitems") or []:
-            _render_heading_tree(builder, child, content_map, level=2)
-        _render_lists(builder, item.get("lists"), heading_level=1)
-        _render_tables(builder, item.get("tables"))
-        _render_figures(builder, item.get("figures"))
+    _render_item_body(builder, item, content_map, has_blocks, heading_level=1)
 
     if is_references:
         _render_reference_entries(builder)
     return is_references
+
+
+def _render_item_body(builder, item, content_map, has_blocks, heading_level):
+    if has_blocks:
+        _render_section_body(builder, item, content_map, heading_level=heading_level)
+        for child in item.get("subitems") or []:
+            _render_heading_tree(builder, child, content_map, level=heading_level + 1)
+        return
+    builder.add_paragraphs(_content_for(item, content_map), level=heading_level)
+    for child in item.get("subitems") or []:
+        _render_heading_tree(builder, child, content_map, level=heading_level + 1)
+    _render_lists(builder, item.get("lists"), heading_level=heading_level)
+    _render_tables(builder, item.get("tables"))
+    _render_figures(builder, item.get("figures"))
 
 
 def _render_heading_tree(builder, item, content_map, level):
