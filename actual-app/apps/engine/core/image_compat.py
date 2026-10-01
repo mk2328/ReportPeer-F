@@ -531,13 +531,287 @@ def _resolve_svg_root_size(root) -> bool:
     return True
 
 
+_SVG_PATH_TOKEN_RE = re.compile(
+    r"[MmLlHhVvCcSsQqTtAaZz]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
+)
+_MARKER_URL_RE = re.compile(r"url\(\s*['\"]?#([^'\")\s]+)['\"]?\s*\)")
+_MARKER_STYLE_PROPS = (
+    "fill", "fill-opacity", "fill-rule", "stroke", "stroke-width", "stroke-opacity",
+    "stroke-linecap", "stroke-linejoin", "stroke-miterlimit", "stroke-dasharray", "color",
+)
+
+
+def _svg_path_segments(d: str):
+    """
+    Path data -> cubic-like segments (p0, c1, c2, p1), enough to find endpoint
+    tangents. Arcs use their chord. Returns None for data it cannot follow.
+    """
+    tokens = _SVG_PATH_TOKEN_RE.findall(d or "")
+    segments = []
+    index = 0
+    command = None
+    current = start = (0.0, 0.0)
+    prev_command, prev_ctrl = "", None
+
+    def number() -> float:
+        nonlocal index
+        value = float(tokens[index])
+        index += 1
+        return value
+
+    try:
+        while index < len(tokens):
+            token = tokens[index]
+            if token.isalpha():
+                command = token
+                index += 1
+                if command in "Zz":
+                    if current != start:
+                        segments.append((current, current, start, start))
+                    current, command, prev_command = start, None, "Z"
+                    continue
+                if index >= len(tokens) or tokens[index].isalpha():
+                    return None
+            elif command is None:
+                return None
+
+            relative = command.islower()
+            upper = command.upper()
+            ox, oy = current if relative else (0.0, 0.0)
+
+            def point():
+                return (ox + number(), oy + number())
+
+            if upper == "M":
+                current = start = point()
+                command = "l" if relative else "L"
+                prev_command, prev_ctrl = "M", None
+                continue
+            if upper == "L":
+                end = point()
+                segment = (current, current, end, end)
+            elif upper == "H":
+                end = (ox + number() if relative else number(), current[1])
+                segment = (current, current, end, end)
+            elif upper == "V":
+                end = (current[0], oy + number() if relative else number())
+                segment = (current, current, end, end)
+            elif upper in ("C", "S"):
+                if upper == "C":
+                    c1 = point()
+                elif prev_command in ("C", "S") and prev_ctrl:
+                    c1 = (2 * current[0] - prev_ctrl[0], 2 * current[1] - prev_ctrl[1])
+                else:
+                    c1 = current
+                c2, end = point(), point()
+                segment, prev_ctrl = (current, c1, c2, end), c2
+            elif upper in ("Q", "T"):
+                if upper == "Q":
+                    q = point()
+                elif prev_command in ("Q", "T") and prev_ctrl:
+                    q = (2 * current[0] - prev_ctrl[0], 2 * current[1] - prev_ctrl[1])
+                else:
+                    q = current
+                end = point()
+                segment, prev_ctrl = (current, q, q, end), q
+            elif upper == "A":
+                for _ in range(5):
+                    number()
+                end = point()
+                segment = (current, current, end, end)
+            else:
+                return None
+            segments.append(segment)
+            prev_command = upper
+            current = end
+    except (IndexError, ValueError):
+        return None
+    return segments
+
+
+def _marker_vertex_angle(segments, at_end: bool):
+    """Vertex and direction (degrees) where marker-start / marker-end attach."""
+    import math
+
+    if not segments:
+        return None
+    ordered = reversed(segments) if at_end else segments
+    for p0, c1, c2, p1 in ordered:
+        candidates = (
+            ((p1[0] - c2[0], p1[1] - c2[1]), (p1[0] - c1[0], p1[1] - c1[1]), (p1[0] - p0[0], p1[1] - p0[1]))
+            if at_end
+            else ((c1[0] - p0[0], c1[1] - p0[1]), (c2[0] - p0[0], c2[1] - p0[1]), (p1[0] - p0[0], p1[1] - p0[1]))
+        )
+        for dx, dy in candidates:
+            if abs(dx) > 1e-9 or abs(dy) > 1e-9:
+                vertex = segments[-1][3] if at_end else segments[0][0]
+                return vertex, math.degrees(math.atan2(dy, dx))
+    vertex = segments[-1][3] if at_end else segments[0][0]
+    return vertex, 0.0
+
+
+def _element_marker_segments(element):
+    tag = _local_tag(element.tag)
+    if tag == "path":
+        return _svg_path_segments(element.get("d", ""))
+    if tag == "line":
+        a = (_svg_number(element.get("x1")), _svg_number(element.get("y1")))
+        b = (_svg_number(element.get("x2")), _svg_number(element.get("y2")))
+        return [(a, a, b, b)]
+    if tag in ("polyline", "polygon"):
+        values = [float(v) for v in re.findall(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?", element.get("points", ""))]
+        points = list(zip(values[0::2], values[1::2]))
+        if tag == "polygon" and points:
+            points.append(points[0])
+        return [(a, a, b, b) for a, b in zip(points, points[1:])]
+    return None
+
+
+def _marker_reference(value, origin: float, extent: float) -> float:
+    keyword = (value or "").strip().lower()
+    if keyword in ("left", "top"):
+        return origin
+    if keyword == "center":
+        return origin + extent / 2.0
+    if keyword in ("right", "bottom"):
+        return origin + extent
+    return _svg_number(value)
+
+
+def _marker_inherited_style(marker, parents) -> str:
+    """
+    Marker content inherits from the <marker>'s own ancestors, not from the
+    path using it. Resolve that chain so the copied geometry keeps its colours.
+    """
+    chain = []
+    node = marker
+    while node is not None:
+        chain.append(node)
+        node = parents.get(node)
+    merged: dict[str, str] = {}
+    for element in reversed(chain):
+        for name in _MARKER_STYLE_PROPS:
+            if element.get(name):
+                merged[name] = element.get(name)
+        decls = _parse_css_declarations(element.get("style", ""))
+        merged.update({k: v for k, v in decls.items() if k in _MARKER_STYLE_PROPS})
+    return ";".join(f"{k}:{v}" for k, v in merged.items())
+
+
+def _expand_svg_markers(root) -> bool:
+    """
+    Draw marker-start / marker-end (Mermaid arrowheads) as real geometry.
+
+    MuPDF ignores <marker>, so directed edges lost their arrowheads. Each use
+    becomes a transformed copy of the marker content placed after the shape,
+    following SVG marker rules: vertex position, orient, markerUnits, viewBox
+    scaling and refX/refY. marker-mid is left untouched.
+    """
+    import copy
+
+    markers = {
+        el.get("id"): el
+        for el in root.iter()
+        if isinstance(el.tag, str) and _local_tag(el.tag) == "marker" and el.get("id")
+    }
+    if not markers:
+        return False
+    parents = {child: parent for parent in root.iter() for child in parent}
+    changed = False
+
+    for element in list(root.iter()):
+        if not isinstance(element.tag, str) or _local_tag(element.tag) == "marker":
+            continue
+        decls = _parse_css_declarations(element.get("style", ""))
+        uses = []
+        for prop, at_end in (("marker-start", False), ("marker-end", True)):
+            match = _MARKER_URL_RE.search(element.get(prop) or decls.get(prop, ""))
+            if match and match.group(1) in markers:
+                uses.append((prop, at_end, markers[match.group(1)]))
+        if not uses:
+            continue
+        segments = _element_marker_segments(element)
+        parent = parents.get(element)
+        if not segments or parent is None:
+            continue
+
+        stroke_width = _svg_number(
+            decls.get("stroke-width") or element.get("stroke-width"), 1.0
+        ) or 1.0
+        namespace = element.tag[: -len(_local_tag(element.tag))]
+        slot = list(parent).index(element) + 1
+        for prop, at_end, marker in uses:
+            placed = _marker_vertex_angle(segments, at_end)
+            if placed is None:
+                continue
+            (vx, vy), angle = placed
+            orient = (marker.get("orient") or "0").strip().lower()
+            if orient == "auto-start-reverse":
+                rotation = angle if at_end else angle + 180.0
+            elif orient == "auto":
+                rotation = angle
+            else:
+                rotation = _svg_number(orient.replace("deg", ""), 0.0)
+
+            unit_scale = (
+                1.0
+                if (marker.get("markerUnits") or "").strip() == "userSpaceOnUse"
+                else stroke_width
+            )
+            box_w = _svg_number(marker.get("markerWidth"), 3.0)
+            box_h = _svg_number(marker.get("markerHeight"), 3.0)
+            try:
+                vb_x, vb_y, vb_w, vb_h = (
+                    float(v) for v in re.split(r"[\s,]+", (marker.get("viewBox") or "").strip())
+                )
+            except ValueError:
+                vb_x = vb_y = 0.0
+                vb_w = vb_h = 0.0
+            if vb_w > 0 and vb_h > 0:
+                aspect = (marker.get("preserveAspectRatio") or "").strip().lower()
+                if aspect.startswith("none"):
+                    sx, sy = box_w / vb_w, box_h / vb_h
+                else:
+                    pick = max if aspect.endswith("slice") else min
+                    sx = sy = pick(box_w / vb_w, box_h / vb_h)
+            else:
+                sx = sy = 1.0
+                vb_w, vb_h = box_w, box_h
+            ref_x = _marker_reference(marker.get("refX"), vb_x, vb_w)
+            ref_y = _marker_reference(marker.get("refY"), vb_y, vb_h)
+
+            group = copy.deepcopy(marker)
+            group.tag = f"{namespace}g"
+            group.attrib.clear()
+            for node in group.iter():
+                node.attrib.pop("id", None)
+            group.set(
+                "transform",
+                f"translate({vx:g},{vy:g}) rotate({rotation:g}) "
+                f"scale({sx * unit_scale:g},{sy * unit_scale:g}) "
+                f"translate({-ref_x:g},{-ref_y:g})",
+            )
+            inherited = _marker_inherited_style(marker, parents)
+            if inherited:
+                group.set("style", inherited)
+            parent.insert(slot, group)
+            slot += 1
+
+            element.attrib.pop(prop, None)
+            decls.pop(prop, None)
+            changed = True
+        if element.get("style") is not None:
+            element.set("style", ";".join(f"{k}:{v}" for k, v in decls.items()))
+    return changed
+
+
 def _prepare_svg_for_mupdf(svg_bytes: bytes) -> bytes:
     """
     Make an SVG renderable by MuPDF without losing colour, labels or extent.
 
     Runs on every SVG: stylesheet inlining, then colour-function conversion,
-    HTML-label conversion and root sizing. Returns the inlined bytes unchanged
-    when none of those apply or the SVG cannot be parsed.
+    HTML-label conversion, root sizing and marker expansion. Returns the
+    inlined bytes unchanged when none of those apply or the SVG cannot be parsed.
     """
     svg_bytes = _inline_svg_stylesheet(svg_bytes)
     import xml.etree.ElementTree as ET
@@ -550,6 +824,7 @@ def _prepare_svg_for_mupdf(svg_bytes: bytes) -> bytes:
     changed = _normalize_svg_colors(root)
     changed = _replace_foreign_object_labels(root) or changed
     changed = _resolve_svg_root_size(root) or changed
+    changed = _expand_svg_markers(root) or changed
     if not changed:
         return svg_bytes
 
