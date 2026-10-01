@@ -607,6 +607,9 @@ class DocumentBuilder:
         logo_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
         logo_para.paragraph_format.space_after = Pt(0)
         if logo_path is not None:
+            logo_path = ensure_docx_compatible_image(
+                logo_path, figure_name="university logo"
+            )
             run = logo_para.add_run()
             # Width only — preserve native aspect ratio; column width still uses logo_w.
             run.add_picture(str(logo_path), width=Inches(logo_w))

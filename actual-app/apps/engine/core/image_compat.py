@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import atexit
 import os
+import re
 import tempfile
 from pathlib import Path
 
@@ -141,6 +142,162 @@ def _convert_webp_to_png(path: Path, label: str) -> str:
     return _flatten_raster(path, label, "webp")
 
 
+_SVG_STYLE_TAG_RE = re.compile(rb"<(?:\w+:)?style\b", re.IGNORECASE)
+_CSS_COMPOUND_RE = re.compile(r"^(\*|[A-Za-z][\w-]*)?((?:[#.][\w-]+)*)$")
+
+
+def _local_tag(tag) -> str:
+    return tag.rsplit("}", 1)[-1] if isinstance(tag, str) else ""
+
+
+def _strip_css_at_rules(css: str) -> str:
+    out: list[str] = []
+    i = 0
+    while i < len(css):
+        at = css.find("@", i)
+        if at < 0:
+            out.append(css[i:])
+            break
+        out.append(css[i:at])
+        semi, brace = css.find(";", at), css.find("{", at)
+        if brace < 0 or (0 <= semi < brace):
+            i = len(css) if semi < 0 else semi + 1
+            continue
+        depth, j = 0, brace
+        while j < len(css):
+            depth += {"{": 1, "}": -1}.get(css[j], 0)
+            j += 1
+            if depth == 0:
+                break
+        i = j
+    return "".join(out)
+
+
+def _parse_css_declarations(text: str) -> dict[str, str]:
+    decls: dict[str, str] = {}
+    for part in (text or "").split(";"):
+        name, sep, value = part.partition(":")
+        name = name.strip().lower()
+        value = value.replace("!important", "").strip()
+        if sep and name and value and "var(" not in value:
+            decls[name] = value
+    return decls
+
+
+def _parse_css_selector(selector: str):
+    """Left-to-right [(combinator, (tag, ids, classes))]; None if unsupported."""
+    chain = []
+    combinator = " "
+    for token in selector.replace(">", " > ").split():
+        if token == ">":
+            combinator = ">"
+            continue
+        match = _CSS_COMPOUND_RE.match(token)
+        if not match or not token:
+            return None
+        parts = re.findall(r"[#.][\w-]+", match.group(2) or "")
+        chain.append(
+            (
+                combinator,
+                (
+                    (match.group(1) or "").lower(),
+                    [p[1:] for p in parts if p[0] == "#"],
+                    [p[1:] for p in parts if p[0] == "."],
+                ),
+            )
+        )
+        combinator = " "
+    return chain or None
+
+
+def _css_compound_matches(element, compound) -> bool:
+    tag, ids, classes = compound
+    if tag and tag != "*" and _local_tag(element.tag).lower() != tag:
+        return False
+    if any(element.get("id") != value for value in ids):
+        return False
+    own = set((element.get("class") or "").split())
+    return all(value in own for value in classes)
+
+
+def _css_chain_matches(element, chain, parents, index) -> bool:
+    combinator, compound = chain[index]
+    if not _css_compound_matches(element, compound):
+        return False
+    if index == 0:
+        return True
+    parent = parents.get(element)
+    if combinator == ">":
+        return parent is not None and _css_chain_matches(parent, chain, parents, index - 1)
+    while parent is not None:
+        if _css_chain_matches(parent, chain, parents, index - 1):
+            return True
+        parent = parents.get(parent)
+    return False
+
+
+def _inline_svg_stylesheet(svg_bytes: bytes) -> bytes:
+    """
+    Copy <style> rules onto each element's style attribute.
+
+    MuPDF ignores SVG stylesheets, so class-styled shapes (Mermaid, draw.io and
+    most diagram exports) fall back to SVG's default black fill. Inline style is
+    honoured. Returns the input unchanged when there is no stylesheet or the
+    SVG cannot be parsed.
+    """
+    if not _SVG_STYLE_TAG_RE.search(svg_bytes):
+        return svg_bytes
+    import xml.etree.ElementTree as ET
+
+    try:
+        root = ET.fromstring(svg_bytes)
+    except ET.ParseError:
+        return svg_bytes
+
+    css = "".join(
+        "".join(el.itertext()) for el in root.iter() if _local_tag(el.tag) == "style"
+    )
+    css = _strip_css_at_rules(re.sub(r"/\*.*?\*/", "", css, flags=re.S))
+    rules = []
+    for order, block in enumerate(re.finditer(r"([^{}]+)\{([^{}]*)\}", css)):
+        decls = _parse_css_declarations(block.group(2))
+        if not decls:
+            continue
+        for selector in block.group(1).split(","):
+            chain = _parse_css_selector(selector.strip())
+            if chain:
+                specificity = (
+                    sum(len(c[1][1]) for c in chain),
+                    sum(len(c[1][2]) for c in chain),
+                    sum(1 for c in chain if c[1][0] not in ("", "*")),
+                )
+                rules.append((specificity, order, chain, decls))
+    if not rules:
+        return svg_bytes
+
+    parents = {child: parent for parent in root.iter() for child in parent}
+    for element in root.iter():
+        if not isinstance(element.tag, str):
+            continue
+        matched = [
+            (spec, order, decls)
+            for spec, order, chain, decls in rules
+            if _css_chain_matches(element, chain, parents, len(chain) - 1)
+        ]
+        if not matched:
+            continue
+        merged: dict[str, str] = {}
+        for _, _, decls in sorted(matched, key=lambda item: (item[0], item[1])):
+            merged.update(decls)
+        # Inline style outranks the stylesheet in CSS.
+        merged.update(_parse_css_declarations(element.get("style", "")))
+        element.set("style", ";".join(f"{k}:{v}" for k, v in merged.items()))
+
+    ET.register_namespace("", "http://www.w3.org/2000/svg")
+    ET.register_namespace("xlink", "http://www.w3.org/1999/xlink")
+    return ET.tostring(root, encoding="utf-8")
+
+
 def _convert_svg_to_png(path: Path, label: str) -> str:
     try:
         import pymupdf
@@ -153,7 +310,8 @@ def _convert_svg_to_png(path: Path, label: str) -> str:
         from PIL import Image
         import io
 
-        doc = pymupdf.open(path)
+        svg_bytes = _inline_svg_stylesheet(path.read_bytes())
+        doc = pymupdf.open(stream=svg_bytes, filetype="svg")
         try:
             if doc.page_count < 1:
                 raise FigureImageError(
