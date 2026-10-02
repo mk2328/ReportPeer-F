@@ -1,8 +1,9 @@
 "use client";
 
-import type { MutableRefObject } from "react";
+import type { ClipboardEvent, MutableRefObject } from "react";
 import { Trash2 } from "lucide-react";
-import type { ContentBlock } from "@/lib/structureUtils";
+import type { ContentBlock, ContentTable } from "@/lib/structureUtils";
+import { parseClipboardTable } from "@/lib/parseClipboardTable";
 import { resolveCitations } from "@/lib/references";
 
 function autoGrowTextarea(el: HTMLTextAreaElement | null) {
@@ -21,6 +22,8 @@ type Props = {
     onSelect: () => void;
     onChangeText: (text: string) => void;
     onRemove: () => void;
+    /** When clipboard contains a table, insert it via the existing table flow. */
+    onPasteTable?: (table: ContentTable) => void;
 };
 
 export function ParagraphBlock({
@@ -31,7 +34,18 @@ export function ParagraphBlock({
     onSelect,
     onChangeText,
     onRemove,
+    onPasteTable,
 }: Props) {
+    const handlePaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
+        if (!onPasteTable) return;
+        const html = e.clipboardData.getData("text/html");
+        const plain = e.clipboardData.getData("text/plain");
+        const table = parseClipboardTable(html, plain);
+        if (!table) return;
+        e.preventDefault();
+        onPasteTable(table);
+    };
+
     return (
         <div
             className={`group relative -mx-3 rounded-md px-3 py-1 transition-colors ${selected ? "bg-[#F2EBF1]/50" : "hover:bg-slate-50"}`}
@@ -62,6 +76,7 @@ export function ParagraphBlock({
                     };
                     onChangeText(e.target.value);
                 }}
+                onPaste={handlePaste}
                 className="w-full resize-none overflow-hidden bg-transparent font-serif text-[15px] leading-[1.9] text-justify text-slate-800 placeholder:text-slate-300 focus:outline-none"
                 placeholder="Start writing..."
             />
