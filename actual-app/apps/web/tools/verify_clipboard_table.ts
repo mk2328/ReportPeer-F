@@ -123,6 +123,40 @@ function assertManualGridStillBuilds() {
   console.log("PASS manual table shape unchanged");
 }
 
+function assertWordBulletNotTable() {
+  // Word plain clipboard for bullets is often "•\\tItem".
+  const plain = "•\tAlpha\n•\tBeta\n•\tGamma";
+  assert.equal(parseClipboardTable("", plain), null);
+
+  // Word HTML list-layout table: marker | text
+  const html = `
+    <html><body>
+    <table class="MsoTableGrid">
+      <tr><td>•</td><td>Alpha</td></tr>
+      <tr><td>•</td><td>Beta</td></tr>
+    </table>
+    <p class="MsoListParagraph" style="mso-list:l0 level1 lfo1">Alpha</p>
+    </body></html>`;
+  assert.equal(parseClipboardTable(html, plain), null);
+  console.log("PASS Word bullet paste is not treated as a table");
+}
+
+function assertGenuineTableStillWinsWithNoise() {
+  // Real multi-column table must still paste even if Word stylesheet mentions lists.
+  const html = `
+    <style>@list l0:level1 { mso-level-number-format:bullet; }</style>
+    <table>
+      <tr><th>Name</th><th>Score</th><th>Pass</th></tr>
+      <tr><td>Ali</td><td>90</td><td>Yes</td></tr>
+      <tr><td>Sara</td><td>85</td><td>Yes</td></tr>
+    </table>`;
+  const table = parseClipboardTable(html, "Name\tScore\tPass\nAli\t90\tYes\nSara\t85\tYes");
+  assert.ok(table);
+  assert.equal(table!.columns.length, 3);
+  assert.equal(table!.data.length, 2);
+  console.log("PASS genuine multi-column table still detected");
+}
+
 function main() {
   assertPlainPasteIgnored();
   assertTsvPaste();
@@ -130,6 +164,8 @@ function main() {
   assertRowspan();
   assertSheetsLikeHtml();
   assertManualGridStillBuilds();
+  assertWordBulletNotTable();
+  assertGenuineTableStillWinsWithNoise();
   console.log("ALL clipboard table checks passed");
 }
 
