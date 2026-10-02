@@ -2040,6 +2040,17 @@ export default function EditorPage() {
                                             block.id
                                         )
                                     }
+                                    onPasteList={(list) =>
+                                        insertBlockAfter(
+                                            {
+                                                id: list.id,
+                                                type: "list",
+                                                listType: list.listType,
+                                                items: list.items,
+                                            },
+                                            block.id
+                                        )
+                                    }
                                 />
                             );
                         }
