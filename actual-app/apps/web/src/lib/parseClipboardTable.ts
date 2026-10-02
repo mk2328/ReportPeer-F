@@ -314,6 +314,67 @@ function hasVisibleContent(rows: ParsedCell[][]): boolean {
   );
 }
 
+/** Pure list-marker cell text (Word/Docs often put "•\\tItem" on the clipboard). */
+function isListMarkerText(text: string): boolean {
+  const value = String(text || "").trim();
+  if (!value) return false;
+  if (/^[•●○▪◦·‣⁃\-*\u2013\u2014]$/.test(value)) return true;
+  if (/^[oØ§]$/i.test(value)) return true;
+  if (/^\d+[\.\)]$/.test(value)) return true;
+  if (/^[a-zA-Z][\.\)]$/.test(value)) return true;
+  return false;
+}
+
+/**
+ * Word bullet paste frequently becomes a 2-column grid: marker | text.
+ * That must be handled by the list parser, not the table parser.
+ */
+export function gridLooksLikeListScaffold(rows: ParsedCell[][]): boolean {
+  if (!rows || rows.length < 2) return false;
+  const visibleRows = rows.map((row) => row.filter((cell) => !cell.hidden));
+  if (visibleRows.some((row) => row.length < 2)) return false;
+
+  let markerRows = 0;
+  for (const row of visibleRows) {
+    const first = String(row[0]?.text || "").trim();
+    const second = String(row[1]?.text || "").trim();
+    if (isListMarkerText(first) && second) markerRows += 1;
+  }
+  return markerRows >= 2 && markerRows === visibleRows.length;
+}
+
+function htmlLooksLikeWordOrHtmlList(html: string): boolean {
+  const value = String(html || "");
+  if (!value) return false;
+  if (/<(ul|ol)\b/i.test(value)) return true;
+  if (/MsoListParagraph/i.test(value)) return true;
+  const msoList = (value.match(/mso-list\s*:/gi) || []).length;
+  return msoList >= 2;
+}
+
+/**
+ * Word list paste often wraps markers in a 1–2 column layout table, or includes
+ * stylesheet noise like table.MsoNormalTable alongside mso-list paragraphs.
+ * Reject those scaffolds while keeping genuine multi-column data tables.
+ */
+function isWeakListLayoutTable(rows: ParsedCell[][], html: string): boolean {
+  if (gridLooksLikeListScaffold(rows)) return true;
+  if (!htmlLooksLikeWordOrHtmlList(html)) return false;
+
+  const widths = rows.map((row) => row.filter((cell) => !cell.hidden).length);
+  const width = Math.max(0, ...widths);
+  if (width <= 1) return true;
+
+  if (width === 2) {
+    return rows.every((row) => {
+      const cells = row.filter((cell) => !cell.hidden);
+      const first = String(cells[0]?.text || "").trim();
+      return !first || isListMarkerText(first);
+    });
+  }
+  return false;
+}
+
 /** First row → columns[]; remaining rows → data[]. Ensures at least one body row. */
 export function buildContentTableFromRows(rows: ParsedCell[][]): ContentTable | null {
   const grid = clampGrid(rows).filter((row) => row.length > 0);
@@ -346,19 +407,22 @@ export function buildContentTableFromRows(rows: ParsedCell[][]): ContentTable | 
 /**
  * Prefer HTML `<table>`; fall back to TSV plain text.
  * Returns null when the clipboard is not a table so callers can keep default paste.
+ *
+ * Word/Docs bullet paste often includes table-like markup or "•\\ttext" TSV.
+ * Those are rejected here so ParagraphBlock can route them to the list parser.
  */
 export function parseClipboardTable(
   html: string,
   plainText: string
 ): ContentTable | null {
   const fromHtml = parseHtmlTableRows(html);
-  if (fromHtml) {
+  if (fromHtml && !isWeakListLayoutTable(fromHtml, html)) {
     const table = buildContentTableFromRows(fromHtml);
     if (table) return table;
   }
 
   const fromTsv = parseTsvTableRows(plainText);
-  if (fromTsv) {
+  if (fromTsv && !gridLooksLikeListScaffold(fromTsv)) {
     return buildContentTableFromRows(fromTsv);
   }
 
