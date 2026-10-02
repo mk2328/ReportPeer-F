@@ -2028,6 +2028,18 @@ export default function EditorPage() {
                                         )
                                     }
                                     onRemove={() => removeBlock(block.id)}
+                                    onPasteTable={(table) =>
+                                        insertBlockAfter(
+                                            {
+                                                id: table.id,
+                                                type: "table",
+                                                caption: table.caption,
+                                                columns: table.columns,
+                                                data: table.data,
+                                            },
+                                            block.id
+                                        )
+                                    }
                                 />
                             );
                         }
