@@ -4,6 +4,7 @@ import type { ClipboardEvent, MutableRefObject } from "react";
 import { Trash2 } from "lucide-react";
 import type { ContentBlock, ContentTable } from "@/lib/structureUtils";
 import { parseClipboardTable } from "@/lib/parseClipboardTable";
+import { parseClipboardList, type ClipboardListBlock } from "@/lib/parseClipboardList";
 import { resolveCitations } from "@/lib/references";
 
 function autoGrowTextarea(el: HTMLTextAreaElement | null) {
@@ -24,6 +25,8 @@ type Props = {
     onRemove: () => void;
     /** When clipboard contains a table, insert it via the existing table flow. */
     onPasteTable?: (table: ContentTable) => void;
+    /** When clipboard contains a list, insert it via the existing list flow. */
+    onPasteList?: (list: ClipboardListBlock) => void;
 };
 
 export function ParagraphBlock({
@@ -35,15 +38,31 @@ export function ParagraphBlock({
     onChangeText,
     onRemove,
     onPasteTable,
+    onPasteList,
 }: Props) {
     const handlePaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
-        if (!onPasteTable) return;
         const html = e.clipboardData.getData("text/html");
         const plain = e.clipboardData.getData("text/plain");
-        const table = parseClipboardTable(html, plain);
-        if (!table) return;
-        e.preventDefault();
-        onPasteTable(table);
+
+        // Tables first so the previously shipped paste path stays unchanged.
+        if (onPasteTable) {
+            const table = parseClipboardTable(html, plain);
+            if (table) {
+                e.preventDefault();
+                onPasteTable(table);
+                return;
+            }
+        }
+
+        if (onPasteList) {
+            const list = parseClipboardList(html, plain);
+            if (list) {
+                e.preventDefault();
+                onPasteList(list);
+                return;
+            }
+        }
+        // Non-table / non-list → browser default paste.
     };
 
     return (
