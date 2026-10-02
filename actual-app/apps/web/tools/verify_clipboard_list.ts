@@ -125,6 +125,34 @@ function assertTablePasteStillWins() {
   console.log("PASS table parser still works (table tried first in paste handler)");
 }
 
+function assertWordBulletTabPlainBecomesList() {
+  // Regression: Word "•\\tItem" used to be claimed by the table parser.
+  const plain = "•\tAlpha\n•\tBeta\n•\tGamma";
+  assert.equal(parseClipboardTable("", plain), null);
+  const list = parseClipboardList("", plain);
+  assert.ok(list);
+  assert.equal(list!.listType, "bullet");
+  assert.equal(list!.items.map((item) => item.text).join("|"), "Alpha|Beta|Gamma");
+  console.log("PASS Word •\\tItem plain paste → list (not table)");
+}
+
+function assertWordMarkerTableBecomesList() {
+  const html = `
+    <table>
+      <tr><td>•</td><td>First</td></tr>
+      <tr><td>•</td><td>Second</td></tr>
+    </table>`;
+  const plain = "•\tFirst\n•\tSecond";
+  assert.equal(parseClipboardTable(html, plain), null);
+  const list = parseClipboardList(
+    `<ul><li>First</li><li>Second</li></ul>`,
+    plain
+  );
+  assert.ok(list);
+  assert.equal(list!.items.length, 2);
+  console.log("PASS Word marker|text table HTML deferred to list path");
+}
+
 function main() {
   assertPlainTextIgnored();
   assertHtmlBulletList();
@@ -134,6 +162,8 @@ function main() {
   assertPlainNumberFallback();
   assertWordMsoList();
   assertTablePasteStillWins();
+  assertWordBulletTabPlainBecomesList();
+  assertWordMarkerTableBecomesList();
   console.log("ALL clipboard list checks passed");
 }
 
